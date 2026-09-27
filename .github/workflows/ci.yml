@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.11'
+
+      - name: Unit tests (incl. anti-look-ahead suite)
+        run: python -m unittest discover -s swing_master/tests -t . -v
+
+      - name: Reference strategy runs
+        run: python research/reference_strategy.py
+
+      - name: Static export builds
+        run: SM_STATE_DIR=/tmp/sm-state python -m swing_master.main export-static /tmp/swing-master.html
