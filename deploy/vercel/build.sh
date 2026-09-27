@@ -5,9 +5,9 @@
 # environment variables, marked Sensitive, and the build reads real F&O data from
 # TradingMaster.  Without them it builds the demo.  SM_DATA_SOURCE overrides either way.
 set -eu
-REPO="${SM_GIT_REPO:-https://github.com/splasious/ui-ux-pro-max-skill.git}"
-REF="${SM_GIT_REF:-claude/trading-app-themes-ogqq9v}"
-SUBDIR="${SM_GIT_SUBDIR:-projects/swing-master}"
+REPO="${SM_GIT_REPO:-https://github.com/splasious/splasious-swing-master.git}"
+REF="${SM_GIT_REF:-main}"
+SUBDIR="${SM_GIT_SUBDIR:-.}"
 OUT="$(pwd)/public"
 
 if [ -z "${SM_DATA_SOURCE:-}" ] && [ -n "${SM_TM_EMAIL:-}${SM_TM_TOKEN:-}" ]; then
