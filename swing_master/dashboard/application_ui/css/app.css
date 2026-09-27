@@ -149,6 +149,7 @@ svg text { font-family: var(--font-num); }
 .side-card { padding: 12px; border-radius: var(--radius); background: var(--panel); border: 1px solid var(--border); display: grid; gap: 6px; font-size: 12.5px; }
 .side-card .row { display: flex; justify-content: space-between; gap: 8px; }
 .side-card h4 { font-size: 13px; display: flex; align-items: center; gap: 8px; }
+.side-card svg { width: 16px; height: 16px; flex: 0 0 auto; color: var(--accent); }
 .side-foot { margin-top: auto; display: grid; gap: 10px; }
 
 /* ---------------- ribbon ---------------- */
@@ -412,7 +413,8 @@ details.more summary::-webkit-details-marker { display: none; }
   .sidebar .nav-item .count { position: absolute; margin: -22px 0 0 26px; font-size: 10px; padding: 0 5px; }
   .sidebar .nav-item { position: relative; }
   .shell.nav-open .sidebar {
-    position: fixed; top: 0; left: 0; bottom: 0; z-index: 85; width: 270px; height: auto; padding: calc(14px + env(safe-area-inset-top, 0px)) 12px 18px;
+    position: fixed; top: 0; left: 0; bottom: 0; z-index: 85; width: 270px; height: auto; align-self: stretch; overscroll-behavior: contain;
+    padding: calc(14px + env(safe-area-inset-top, 0px)) 12px 18px;
     box-shadow: var(--shadow);
   }
   .shell.nav-open .sidebar .nav-label, .shell.nav-open .sidebar .nav-item > span { display: inline; }
@@ -425,10 +427,19 @@ details.more summary::-webkit-details-marker { display: none; }
 @media (max-width: 760px) {
   .shell { grid-template-columns: minmax(0, 1fr); grid-template-areas: "top" "main"; }
   .sidebar {
-    position: fixed; top: 0; left: 0; bottom: 0; z-index: 85; width: min(290px, 86vw); height: auto; transform: translateX(-105%);
+    /* align-self: stretch undoes the desktop `start`, which would size the drawer to its content (no scrolling) */
+    position: fixed; top: 0; left: 0; bottom: 0; z-index: 85; width: min(290px, 86vw); height: auto; align-self: stretch;
+    overscroll-behavior: contain; transform: translateX(-105%);
     transition: transform 0.2s ease; padding-top: calc(14px + env(safe-area-inset-top, 0px)); box-shadow: var(--shadow);
   }
   .shell.nav-open .sidebar { transform: none; }
+  /* The drawer is taller than a phone screen: keep Data Health and Settings pinned at its bottom */
+  .sidebar .nav-group[aria-label="System"] {
+    position: sticky; bottom: -18px; z-index: 1; margin: 0 -12px; padding: 8px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+    display: grid; grid-template-columns: 1fr 1fr; gap: 4px 6px;
+    background: var(--bg-2); border-top: 1px solid var(--border); box-shadow: 0 -10px 16px -14px rgba(0, 0, 0, 0.45);
+  }
+  .sidebar .nav-group[aria-label="System"] .nav-label { grid-column: 1 / -1; }
   .topbar { padding: 8px 12px; gap: 8px; }
   .brand { flex: 0 1 auto; gap: 6px; }
   .brand-mark { width: 30px; height: 27px; }
