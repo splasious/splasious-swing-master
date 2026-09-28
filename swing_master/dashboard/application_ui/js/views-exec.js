@@ -186,7 +186,7 @@
   };
 
   function tradeDetail(t) {
-    return `<div class="grid g-2">
+    return `${manageBlock(t)}<div class="grid g-2">
       <div><h3 class="section-title">Trailing-stop history</h3>${t.trail_history.map((h) => `<div style="display:flex;gap:10px;font-size:12.5px;padding:3px 0;border-bottom:1px dashed var(--border)">
         <span class="muted num" style="min-width:86px">${SM.date(h.time)}</span><span class="num">${h.old == null ? "—" : SM.fmt(h.old)} → <b>${SM.fmt(h.new)}</b></span><span class="muted">${esc(h.reason)}</span></div>`).join("")}</div>
       <div><h3 class="section-title">Fills</h3>${t.fills.map((f) => `<div style="display:flex;gap:10px;font-size:12.5px;padding:3px 0;border-bottom:1px dashed var(--border)">
@@ -196,32 +196,104 @@
   }
 
   // ------------------------------------------------------------------ Active trades
+  function manageBlock(t) {
+    if (t.status !== "OPEN") return "";
+    const ro = SM.api.isStatic();
+    const long = t.direction === "LONG";
+    const dis = ro ? 'disabled title="Read-only snapshot: run the Swing Master server to manage trades"' : "";
+    return `<div class="manage" data-trade="${esc(t.trade_id)}">
+      <h3 class="section-title">Manage position</h3>
+      <div class="manage-row">
+        <label class="ctx-field"><span class="muted" style="font-size:11px">New stop (${long ? "raise" : "lower"} only)</span>
+          <input class="input num" type="number" step="0.05" inputmode="decimal" value="${SM.fmt(t.current_stop).replace(/,/g, "")}" data-tm-stop ${dis}></label>
+        <button class="btn" type="button" data-tm="stop" ${dis}>Tighten stop</button>
+        <button class="btn btn-danger" type="button" data-tm="close" ${dis}>Close position</button>
+      </div>
+      <div class="manage-confirm" hidden>Close ${esc(t.remaining_qty)} ${esc(t.symbol)} at the last close ${SM.fmt(t.current_price)}?
+        <button class="btn btn-danger" type="button" data-tm="close-yes">Yes, close</button> <button class="btn" type="button" data-tm="close-no">Cancel</button></div>
+      <p class="muted" style="font-size:12px;margin:6px 0 0">${ro ? "Read-only snapshot: management works when the server is running." : "Stops may tighten but never loosen (Section 26). Actions are logged and kept across daily rebuilds."}</p>
+    </div>`;
+  }
+
+  function bindManage(root, reload) {
+    root.addEventListener("click", async (e) => {
+      const b = e.target.closest("[data-tm]");
+      if (!b) return;
+      const box = b.closest(".manage");
+      const id = box.dataset.trade;
+      const confirmBox = box.querySelector(".manage-confirm");
+      try {
+        if (b.dataset.tm === "close") { confirmBox.hidden = false; return; }
+        if (b.dataset.tm === "close-no") { confirmBox.hidden = true; return; }
+        b.disabled = true;
+        if (b.dataset.tm === "stop") {
+          const v = parseFloat(box.querySelector("[data-tm-stop]").value);
+          await SM.api.post("/api/trades/stop", { trade_id: id, stop: v });
+          SM.toast("Stop tightened");
+        } else if (b.dataset.tm === "close-yes") {
+          await SM.api.post("/api/trades/close", { trade_id: id });
+          SM.toast("Position closed");
+        }
+        reload();
+      } catch (err) { SM.toast(err.message); b.disabled = false; }
+    });
+  }
+
   SM.views.trades = {
     title: "Active Trades", icon: "briefcase", group: "Execution",
     async render(el) {
       const d = await SM.api.get("/api/trades");
-      el.innerHTML = `<div class="view-head"><div><h1>Active trade management</h1><p>${esc(d.note)} Session started ${SM.date(d.session_start)}.</p></div></div>
-        ${ui.card({ title: `Open positions <span class="badge b-solid-accent">${d.open.length}</span>`, sub: "click a row for trail history and fills", body: '<div id="tr-open"></div>', flush: true })}
-        <div id="tr-props"></div>
-        <div class="grid g-2">
-          ${ui.card({ title: "Recently closed", body: '<div id="tr-closed"></div>', flush: true })}
-          ${ui.card({ title: "Paper broker orders", sub: "via the safety gateway", body: '<div id="tr-orders"></div>', flush: true })}
-        </div>`;
-      SM.parts.tradesTable(el.querySelector("#tr-open"), d.open, false);
-      renderProposals(el.querySelector("#tr-props"));
-      ui.table(el.querySelector("#tr-closed"), { compact: true, rows: d.closed, maxHeight: 380, rowKey: (t) => t.trade_id, expand: tradeDetail, empty: ui.empty("No closed trades in this session"), columns: [
-        { key: "symbol", label: "Symbol", render: (t) => `<span class="sym">${esc(t.symbol)}</span>` }, { key: "direction", label: "Dir", render: (t) => ui.dirBadge(t.direction) },
-        { key: "entry_time", label: "Entry", render: (t) => SM.dateShort(t.entry_time) }, { key: "exit_time", label: "Exit", render: (t) => SM.dateShort(t.exit_time) },
-        { key: "exit_reason", label: "Reason", render: (t) => esc(SM.title(t.exit_reason)) },
-        { key: "r_multiple", label: "R", num: true, render: (t) => `<b class="${SM.dir(t.r_multiple)}">${SM.signed(t.r_multiple, 2)}R</b>` },
-        { key: "net_pnl", label: "Net P&L", num: true, render: (t) => ui.money(t.net_pnl) },
-      ] });
-      ui.table(el.querySelector("#tr-orders"), { compact: true, rows: d.orders, maxHeight: 380, empty: ui.empty("No orders"), columns: [
-        { key: "order_id", label: "Order" }, { key: "symbol", label: "Symbol", sortValue: (o) => o.request.symbol, render: (o) => esc(o.request.symbol) },
-        { key: "side", label: "Side", sortValue: (o) => o.request.side, render: (o) => `<b class="${o.request.side === "BUY" ? "up" : "down"}">${esc(o.request.side)}</b>` },
-        { key: "qty", label: "Qty", num: true, sortValue: (o) => o.request.quantity, render: (o) => SM.fmt(o.request.quantity, 0) },
-        { key: "average_price", label: "Avg price", num: true, render: (o) => SM.fmt(o.average_price) }, { key: "status", label: "Status", render: (o) => ui.status(o.status) },
-      ] });
+      let alerts = [];
+      try { alerts = (await SM.api.get("/api/notifications")).items || []; } catch (e) { alerts = []; }
+      const tabs = [["positions", `Positions (${d.open.length})`], ["proposals", "Proposals"], ["orders", `Orders (${d.orders.length})`],
+        ["closed", `Closed (${d.closed.length})`], ["alerts", `Alerts (${alerts.length})`]];
+      const cur = tabs.some(([k]) => k === SM.state.tradesTab) ? SM.state.tradesTab : "positions";
+      el.innerHTML = `<div class="view-head"><div><h1>Active trade management</h1><p>${esc(d.note)} Session started ${SM.date(d.session_start)}.</p></div>
+          <div class="actions">${ui.seg("trtab", tabs, cur, true)}</div></div>
+        <div id="tr-body"></div>`;
+      const body = el.querySelector("#tr-body");
+      const show = (tab) => {
+        SM.state.tradesTab = tab;
+        if (tab === "positions") {
+          body.innerHTML = ui.card({ title: `Open positions <span class="badge b-solid-accent">${d.open.length}</span>`, sub: "click a row for trail history, fills and management", body: '<div id="tr-open"></div>', flush: true });
+          SM.parts.tradesTable(body.querySelector("#tr-open"), d.open, false);
+          bindManage(body, () => { SM.api.clear(); SM.render(); });
+        } else if (tab === "proposals") {
+          body.innerHTML = '<div id="tr-props"></div>';
+          renderProposals(body.querySelector("#tr-props"));
+        } else if (tab === "orders") {
+          body.innerHTML = ui.card({ title: "Paper broker orders", sub: "every order passes the safety gateway", body: '<div id="tr-orders"></div>', flush: true });
+          ui.table(body.querySelector("#tr-orders"), { compact: true, rows: d.orders, maxHeight: 520, empty: ui.empty("No orders"), columns: [
+            { key: "order_id", label: "Order" }, { key: "symbol", label: "Symbol", sortValue: (o) => o.request.symbol, render: (o) => esc(o.request.symbol) },
+            { key: "side", label: "Side", sortValue: (o) => o.request.side, render: (o) => `<b class="${o.request.side === "BUY" ? "up" : "down"}">${esc(o.request.side)}</b>` },
+            { key: "qty", label: "Qty", num: true, sortValue: (o) => o.request.quantity, render: (o) => SM.fmt(o.request.quantity, 0) },
+            { key: "average_price", label: "Avg price", num: true, render: (o) => SM.fmt(o.average_price) },
+            { key: "tag", label: "Source", sm: false, sortValue: (o) => o.request.tag, render: (o) => esc(o.request.tag || "—") },
+            { key: "status", label: "Status", render: (o) => ui.status(o.status) },
+          ] });
+        } else if (tab === "closed") {
+          body.innerHTML = ui.card({ title: "Recently closed", body: '<div id="tr-closed"></div>', flush: true });
+          ui.table(body.querySelector("#tr-closed"), { compact: true, rows: d.closed, maxHeight: 520, rowKey: (t) => t.trade_id, expand: tradeDetail, empty: ui.empty("No closed trades in this session"), columns: [
+            { key: "symbol", label: "Symbol", render: (t) => `<span class="sym">${esc(t.symbol)}</span>` }, { key: "direction", label: "Dir", render: (t) => ui.dirBadge(t.direction) },
+            { key: "entry_time", label: "Entry", render: (t) => SM.dateShort(t.entry_time) }, { key: "exit_time", label: "Exit", render: (t) => SM.dateShort(t.exit_time) },
+            { key: "exit_reason", label: "Reason", render: (t) => esc(SM.title(t.exit_reason)) },
+            { key: "r_multiple", label: "R", num: true, render: (t) => `<b class="${SM.dir(t.r_multiple)}">${SM.signed(t.r_multiple, 2)}R</b>` },
+            { key: "net_pnl", label: "Net P&L", num: true, render: (t) => ui.money(t.net_pnl) },
+          ] });
+        } else {
+          body.innerHTML = ui.card({ title: "Alerts", sub: "notification events from this session (Section 47); Telegram delivery is configured in Settings", body: '<div id="tr-alerts"></div>', flush: true });
+          ui.table(body.querySelector("#tr-alerts"), { compact: true, rows: alerts, maxHeight: 520, empty: ui.empty("No alerts yet"), columns: [
+            { key: "time", label: "Time", sortValue: (a) => a.time || a.at, render: (a) => SM.date(a.time || a.at) },
+            { key: "type", label: "Event", render: (a) => ui.badge(a.title || SM.title(a.type || ""), "b-accent") },
+            { key: "symbol", label: "Symbol", render: (a) => esc(a.symbol || "—") },
+            { key: "details", label: "Details", cls: "wrap", sort: false, render: (a) => esc(Object.entries(a)
+              .filter(([k, v]) => !["type", "title", "at", "time", "symbol"].includes(k) && v != null && typeof v !== "object")
+              .map(([k, v]) => `${SM.title(k)}: ${v}`).join(" · ") || "—") },
+          ] });
+        }
+      };
+      ui.bindSeg(el, "trtab", show);
+      show(cur);
     },
   };
 

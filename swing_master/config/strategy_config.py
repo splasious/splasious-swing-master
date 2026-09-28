@@ -79,8 +79,8 @@ class StrategyConfig:
     # functions and no participant-positioning feed, 70 / 70 admits only a
     # handful of setups on the demo universe, so the shipped defaults are
     # 60 / 65; the Walk-Forward lab re-selects both out of sample.
-    MIN_ZONE_SCORE: float = 60
-    MIN_CONFLUENCE_SCORE: float = 65
+    MIN_ZONE_SCORE: float = 70
+    MIN_CONFLUENCE_SCORE: float = 70
     MIN_FACTOR_COVERAGE: float = 0.60  # share of weight that must be available
     UNAVAILABLE_FACTOR_POLICY: str = "RENORMALIZE"  # RENORMALIZE | ZERO | REJECT
 
@@ -102,7 +102,7 @@ class StrategyConfig:
     TARGET_3_R: float = 3.0
     T1_METHOD: str = "R"  # R | POC | HVN | STRUCTURE | NEAREST
     T2_METHOD: str = "STRUCTURE_OR_R"  # STRUCTURE_OR_R | R
-    T3_METHOD: str = "HTF_OR_R"  # HTF_OR_R | R
+    T3_METHOD: str = "HTF_OR_R"  # HTF_OR_R (HTF opposing zone or HTF confirmed swing, else R) | R
     TARGET_1_EXIT_PERCENT: float = 0.30
     TARGET_2_EXIT_PERCENT: float = 0.30
     RUNNER_PERCENT: float = 0.40

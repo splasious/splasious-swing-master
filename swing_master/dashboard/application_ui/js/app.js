@@ -53,9 +53,13 @@
   function shell() {
     const m = SM.state.meta;
     const stat = SM.api.isStatic();
+    const ds = m.data_status || { status: m.demo ? "DEMO" : "OK", label: m.demo ? "Demo feed" : "Data OK", issues: [] };
+    const br = m.broker || { status: "PAPER", label: "Broker: paper" };
+    const dataDot = { OK: "", DEMO: "warn", PARTIAL: "warn", DOWN: "err" }[ds.status] || "warn";
+    const dataTitle = ds.issues.length ? `${ds.label}: ${ds.issues.join(", ")}` : ds.label;
     const sidebar = NAV.map(([g, items]) => `<nav class="nav-group" aria-label="${g}"><div class="nav-label">${g}</div>${items.map((id) => {
       const v = SM.views[id];
-      return `<a class="nav-item" href="#${id}" data-nav="${id}" title="${esc(v.title)}">${SM.icon(v.icon)}<span>${esc(v.title)}</span>${id === "trades" ? '<span class="count" id="nav-trades" hidden></span>' : ""}</a>`;
+      return `<a class="nav-item" href="#${id}" data-nav="${id}" title="${esc(v.title)}">${SM.icon(v.icon)}<span>${esc(v.title)}</span>${id === "trades" ? '<span class="count" id="nav-trades" hidden></span>' : ""}${id === "health" ? `<span class="status-dot nav-dot ${dataDot}" title="${esc(dataTitle)}"></span>` : ""}</a>`;
     }).join("")}</nav>`).join("");
     document.getElementById("app").innerHTML = `
       <div class="shell" id="shell">
@@ -72,8 +76,8 @@
           </div>
           <div class="top-actions">
             <span class="acct-seg" title="Execution mode: ${esc(SM.title(m.execution_mode))}. Change it in Settings.">${ui.seg("acct", [["paper", "Paper"], ["live", "Live"]], "paper", true)}</span>
-            <span class="status-pill hide-sm hide-md" title="Market data feed"><span class="status-dot ${m.demo ? "warn" : ""}"></span>${m.demo ? "Demo feed" : "Data OK"}</span>
-            <span class="status-pill hide-sm hide-md" title="Broker connection"><span class="status-dot off"></span>Broker: paper</span>
+            <a class="status-pill hide-sm hide-md" href="#health" title="${esc(dataTitle)}"><span class="status-dot ${dataDot}"></span><span class="pill-text">${esc(ds.label)}</span></a>
+            <a class="status-pill hide-sm hide-md" href="#settings" title="Broker connection: ${esc(br.label)}"><span class="status-dot ${br.status === "LIVE" ? "" : "off"}"></span><span class="pill-text">${esc(br.label)}</span></a>
             <div style="position:relative"><button class="iconbtn" type="button" id="skin-btn" aria-haspopup="true" aria-expanded="false" aria-label="Choose theme">${SM.icon("palette")}</button>
               <div class="skin-pop" id="skin-pop" role="radiogroup" aria-label="Theme" hidden><h4>Theme</h4>
                 <button type="button" class="skin-opt" role="radio" data-skin-pick="auto" aria-checked="false"><span class="swatch"><i style="background:#f3f6fb"></i><i style="background:#071526"></i></span><span><b>Auto</b><small>Follow light / dark setting</small></span></button>
@@ -86,7 +90,9 @@
         <aside class="sidebar" id="sidebar">${sidebar}
           <div class="side-foot">
             <div class="side-card"><div class="row"><span class="muted">Market</span><b>NSE</b></div><div class="row" title="${esc(m.universe_name)}"><span class="muted">Universe</span><b>${m.universe_info && m.universe_info.mode === "ALL" ? "All" : "F&amp;O"} · ${esc(String(m.universe.length))}</b></div>
-              <div class="row"><span class="muted">Mode</span><b>${esc(SM.title(m.execution_mode))}</b></div></div>
+              <div class="row"><span class="muted">Mode</span><b>${esc(SM.title(m.execution_mode))}</b></div>
+              <div class="row" title="${esc(dataTitle)}"><span class="muted">Data</span><b class="status-row"><span class="status-dot ${dataDot}"></span>${esc(ds.label.replace(/^Data:? ?/, "") || ds.label)}</b></div>
+              <div class="row"><span class="muted">Broker</span><b class="status-row"><span class="status-dot ${br.status === "LIVE" ? "" : "off"}"></span>${esc(SM.title(br.status))}</b></div></div>
             <a class="side-card side-theme" href="#settings" style="display:none;align-items:center;gap:8px">${SM.icon("palette")}<b>Theme</b><span class="muted" style="margin-left:auto">${esc((SM.skins.find((s) => s.id === SM.resolvedSkin()) || {}).name || "")}</span></a>
             <div class="side-card"><h4><span class="status-dot"></span>Paper trading <span class="badge b-up" style="margin-left:auto">On</span></h4><span class="muted">Replay of recent sessions through the live decision engine.</span></div>
             <div class="side-card" id="side-risk"></div>

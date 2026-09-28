@@ -103,7 +103,7 @@ Confluence weights (Section 21) and zone-score weights (Section 10) are in `conf
 - `ZERO`: count unavailable factors as zero
 - `REJECT`: reject the setup
 
-**Deviation from the brief:** the brief lists `MIN_ZONE_SCORE = 70` and `MIN_CONFLUENCE_SCORE = 70`. With the calibrated component functions and no participant-positioning feed, 70/70 admits only a handful of setups on the demo universe. The shipped defaults are therefore **60 / 65**. The walk-forward lab re-selects both out of sample, and both are editable in Settings.
+**Thresholds:** `MIN_ZONE_SCORE = 70` and `MIN_CONFLUENCE_SCORE = 70`, as in the brief. On the synthetic demo they admit about 28 trades over the full history. The walk-forward lab re-selects both from the train and validate windows only, and both are editable in Settings.
 
 ## Backtest execution assumptions
 

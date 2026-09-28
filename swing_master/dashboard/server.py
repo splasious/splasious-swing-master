@@ -72,6 +72,14 @@ def route_post(p, path: str, body: dict) -> object:
         return api.settings_payload(p)
     if path in ("/api/proposals/confirm", "/api/proposals/reject"):
         return p.decide_proposal(str(body.get("id", "")), path.endswith("confirm"))
+    if path == "/api/trades/close":
+        p.manual_close(str(body.get("trade_id", "")))
+        return api.trades_payload(p)
+    if path == "/api/trades/stop":
+        if body.get("stop") is None:
+            raise ValueError("stop is required")
+        p.manual_stop(str(body.get("trade_id", "")), body["stop"])
+        return api.trades_payload(p)
     if path == "/api/notifications/config":
         from ..notifications import EVENT_TYPES
         events = [e for e in body.get("events", []) if e in EVENT_TYPES]

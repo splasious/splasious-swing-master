@@ -2,7 +2,8 @@
 
 T1: 1R | nearest POC | nearest HVN | nearest structural level | NEAREST of those
 T2: previous confirmed HH (long) / LL (short) or the opposing zone, else 2R
-T3: higher-timeframe opposing zone / major structural level, else 3R
+T3: higher-timeframe opposing zone or major structural level (a confirmed higher-TF
+    swing high for longs / swing low for shorts), whichever is nearer, else 3R
 
 Targets must be strictly ordered away from entry (entry < T1 < T2 < T3 for a
 long).  Any structural candidate that breaks the ordering is replaced by its
@@ -27,7 +28,8 @@ def _nearest(spec, entry: float, levels: Iterable[float], min_dist: float) -> Op
 
 
 def compute_targets(spec, entry: float, stop: float, pivots: List[Pivot], zones: List[Zone],
-                    vp: Optional[VolumeProfile], htf_zones: List[Zone], cfg) -> Dict:
+                    vp: Optional[VolumeProfile], htf_zones: List[Zone], cfg,
+                    htf_pivots: Optional[List[Pivot]] = None) -> Dict:
     risk = abs(entry - stop)
     r = lambda k: entry + spec.sign * k * risk  # noqa: E731
     notes = []
@@ -66,10 +68,14 @@ def compute_targets(spec, entry: float, stop: float, pivots: List[Pivot], zones:
     # ---- T3 ---------------------------------------------------------------
     t3, t3_how = r(cfg.TARGET_3_R), f"{cfg.TARGET_3_R:g}R"
     if cfg.T3_METHOD.upper() == "HTF_OR_R":
-        htf_levels = [z.proximal for z in htf_zones if z.zone_type == spec.opposing_zone_type]
-        structural = _nearest(spec, entry, htf_levels, abs(t2 - entry) + 0.5 * risk)
+        zone_levels = {z.proximal: f"higher-TF {spec.opposing_zone_type.lower()}"
+                       for z in htf_zones if z.zone_type == spec.opposing_zone_type}
+        swing_levels = {p.pivot_price: f"higher-TF confirmed swing {'high' if spec.sign > 0 else 'low'}"
+                        for p in (htf_pivots or []) if p.pivot_type == spec.target_pivot_type}
+        labels = {**swing_levels, **zone_levels}  # a level that is both is reported as the zone
+        structural = _nearest(spec, entry, labels, abs(t2 - entry) + 0.5 * risk)
         if structural is not None and abs(structural - entry) <= 8 * risk:
-            t3, t3_how = structural, f"higher-TF {spec.opposing_zone_type.lower()}"
+            t3, t3_how = structural, labels[structural]
 
     targets = [t1, t2, t3]
     hows = [t1_how, t2_how, t3_how]

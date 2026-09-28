@@ -79,6 +79,18 @@ class RiskTests(unittest.TestCase):
         self.assertTrue(validate_order(SHORT_SPEC, 100.0, [out_s["t1"], out_s["t2"], out_s["t3"]]))
         self.assertFalse(validate_order(LONG_SPEC, 100.0, [105, 104, 110]))
 
+    def test_t3_uses_higher_tf_swing_level(self):
+        # entry 100, risk 5: T2 falls back to 2R = 110; a confirmed weekly swing high at 118 becomes T3
+        htf = [pivot("HIGH", 118.0, 3, 5, "HH"), pivot("HIGH", 131.0, 1, 2, "HH")]
+        out = compute_targets(LONG_SPEC, 100.0, 95.0, [], [], None, [], self.cfg, htf)
+        self.assertEqual(out["t3"], 118.0)
+        self.assertIn("swing high", out["methods"][2])
+        # beyond 8R it is ignored and the R multiple stands
+        far = compute_targets(LONG_SPEC, 100.0, 95.0, [], [], None, [], self.cfg, [pivot("HIGH", 150.0, 3, 5, "HH")])
+        self.assertEqual(far["t3"], 115.0)
+        out_s = compute_targets(SHORT_SPEC, 100.0, 105.0, [], [], None, [], self.cfg, [pivot("LOW", 83.0, 3, 5, "LL")])
+        self.assertEqual(out_s["t3"], 83.0)
+
     # 7 -- stop never loosens
     def test_stop_never_loosens(self):
         self.assertEqual(tighten(LONG_SPEC, 95.0, 90.0), 95.0)

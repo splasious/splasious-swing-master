@@ -53,6 +53,7 @@ def meta(p) -> Dict:
         "profile_types": list(PROFILE_TYPES),
         "min_conf": p.cfg.MIN_CONFLUENCE_SCORE, "min_zone": p.cfg.MIN_ZONE_SCORE,
         "scanner_timeframes": ["1W", "1D", "4H", "1H"], "mtf_hierarchy": p.cfg.MTF_HIERARCHY,
+        "data_status": data_status(p), "broker": broker_summary(p),
     }
 
 
@@ -609,6 +610,31 @@ def notifications_payload(p) -> Dict:
             "channel": p.telegram.status()}
 
 
+_CRITICAL_FEEDS = ("market_feed", "historical_sync", "last_candle")
+_CONTEXT_FEEDS = {"futures_oi": "Futures OI", "options_feed": "Options", "positioning_feed": "Positioning"}
+_FINE = ("OK", "N/A", "DEMO", "NOT CONFIGURED")
+
+
+def data_status(p) -> Dict:
+    """One-line data status for the top bar: DEMO / OK / PARTIAL / DOWN, with what is missing."""
+    h = p.provider.health()
+    if p.provider.is_demo:
+        return {"status": "DEMO", "label": "Demo feed", "issues": []}
+    down = [k.replace("_", " ") for k in _CRITICAL_FEEDS if h.get(k, {}).get("status") not in _FINE]
+    if down:
+        return {"status": "DOWN", "label": "Data down", "issues": down}
+    partial = [name for k, name in _CONTEXT_FEEDS.items() if h.get(k, {}).get("status") not in _FINE]
+    if partial:
+        return {"status": "PARTIAL", "label": f"Data: {len(partial)} feed{'s' if len(partial) > 1 else ''} missing",
+                "issues": partial}
+    return {"status": "OK", "label": "Data OK", "issues": []}
+
+
+def broker_summary(p) -> Dict:
+    live = p.execution_mode == "AUTO" and p.settings.LIVE_TRADING_ENABLED
+    return {"status": "LIVE" if live else "PAPER", "label": "Broker: live" if live else "Broker: paper"}
+
+
 def health_payload(p) -> Dict:
     h = p.provider.health()
     db = {"status": "OK" if p.repo else "DOWN", "detail": str(p.settings.analytics_db_path) if p.repo else "not initialised"}
@@ -621,7 +647,9 @@ def health_payload(p) -> Dict:
         ("Market Feed", h["market_feed"]), ("WebSocket", h["websocket"]), ("Database", db),
         ("Historical Sync", h["historical_sync"]), ("Futures OI", h["futures_oi"]), ("Options Feed", h["options_feed"]),
         ("Positioning Feed", h["positioning_feed"]),
-        ("Broker Connection", {"status": "PAPER", "detail": "PaperBroker connected; live broker not configured"}),
+        ("Broker Connection", {"status": broker_summary(p)["status"],
+                               "detail": "Live broker order routing enabled" if broker_summary(p)["status"] == "LIVE"
+                               else "PaperBroker connected; live broker not configured"}),
         ("Last Candle", h["last_candle"]), ("Latency", h["latency"]), ("Data Gaps", h["data_gaps"]),
         ("Notifications", {"status": "ON" if p.telegram.enabled else "OFF", "detail": p.telegram.status()["detail"]}),
         ("Persistence", {"status": "OK" if p.persist_state == "done" else ("PENDING" if p.persist_state in ("running", "idle")

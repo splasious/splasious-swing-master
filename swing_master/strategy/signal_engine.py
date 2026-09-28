@@ -173,9 +173,12 @@ def _evaluate(an, htf, derivs, positioning, instrument, cfg, spec, trigger, zone
     else:
         entry_ref = bar.close
     stop, stop_note = structural_stop(spec, zone, pivots, atr, entry_ref, cfg.STOP_REFERENCE, cfg.STOP_ATR_BUFFER)
-    htf_zones = htf.analyzer.active_zones() if htf is not None and htf.analyzer.bars else []
+    htf_ready = htf is not None and htf.analyzer.bars
+    htf_zones = htf.analyzer.active_zones() if htf_ready else []
+    # the HTF analyzer only ever receives completed bars, so its confirmed pivots are all known now
+    htf_pivots = htf.analyzer.pivots.confirmed_as_of(len(htf.analyzer.bars) - 1) if htf_ready else []
     if stop is not None:
-        targets = compute_targets(spec, entry_ref, stop, pivots, an.active_zones(), vp, htf_zones, cfg)
+        targets = compute_targets(spec, entry_ref, stop, pivots, an.active_zones(), vp, htf_zones, cfg, htf_pivots)
         rr = reward_risk(entry_ref, stop, targets["t2"])
     else:
         targets, rr = {"t1": None, "t2": None, "t3": None, "methods": [], "notes": [stop_note], "valid": False}, None

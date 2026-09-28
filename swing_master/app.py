@@ -6,6 +6,8 @@ replay, the scanner output and lazily computed labs (ablation, walk-forward).
 """
 from __future__ import annotations
 
+import json
+import math
 import threading
 import time
 from datetime import datetime
@@ -14,6 +16,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .backtest.attribution import attribution
 from .backtest.engine import BacktestResult, PortfolioBacktester
+from .backtest.execution_model import ExecutionModel
 from .backtest.metrics import chart_series, compute_metrics
 from .backtest.walk_forward import WalkForwardLab
 from .config import AppSettings, StrategyConfig
@@ -28,7 +31,9 @@ from .logging_utils import clear as clear_logs, log, recent as recent_logs
 from .notifications import EVENT_TYPES, NotificationBus, TelegramNotifier
 from .positioning import PositioningSuite
 from .scanner import scan
+from .schemas import ExitReason
 from .strategy.pipeline import SymbolDataset, analyze_symbol
+from .strategy.trade_manager import TradeManager
 
 INTRADAY_SESSIONS = {"4H": 200, "1H": 90, "15m": 25, "5m": 8}
 
@@ -152,6 +157,7 @@ class Platform:
 
             self.scan = scan(self.datasets, self.cfg, self.paper.open_trades)
             self._scan_cache = {"1D": self.scan}
+            self._replay_manual_actions()
             self._mtf_cache.clear()
             self.proposal_state.clear()
             self._chart_cache.clear()
@@ -335,6 +341,108 @@ class Platform:
         self.proposal_state[pid] = {"status": "SENT", "order_id": rec.order_id}
         log("order", f"{p['symbol']} proposal confirmed -> {rec.order_id}", qty=size.quantity)
         return self.proposals()
+
+    # ------------------------------------------------------------------ #
+    # Section 38: manual management of open paper trades
+    # ------------------------------------------------------------------ #
+    @property
+    def _manual_file(self) -> Path:
+        return Path(self.settings.STATE_DIR) / "manual_actions.json"
+
+    def _load_manual_actions(self) -> List[Dict]:
+        try:
+            return json.loads(self._manual_file.read_text())
+        except (OSError, ValueError):
+            return []
+
+    def _save_manual_action(self, action: Dict) -> None:
+        actions = self._load_manual_actions() + [action]
+        try:
+            self._manual_file.parent.mkdir(parents=True, exist_ok=True)
+            self._manual_file.write_text(json.dumps(actions, indent=1))
+        except OSError as exc:  # the action still applies for this session; the log says it will not survive a rebuild
+            log("error", f"manual action not saved: {exc}")
+
+    def _open_paper_trade(self, trade_id: str):
+        for t in self.paper.open_trades:
+            if t.trade_id == trade_id:
+                return t
+        raise KeyError(trade_id)
+
+    def _manual_guard(self) -> None:
+        if self.execution_mode in ("BACKTEST", "AUTO"):
+            raise PermissionError(f"Manual trade actions are for paper positions; mode is {self.execution_mode}")
+
+    def manual_close(self, trade_id: str, _replay: bool = False) -> Dict:
+        """Close an open paper trade at the latest completed close (reason MANUAL_CLOSE)."""
+        if not _replay:
+            self._manual_guard()
+        with self.lock:
+            t = self._open_paper_trade(trade_id)
+            ds = self.datasets[t.symbol]
+            i, bar = len(ds.bars) - 1, ds.bars[-1]
+            from .execution.broker_interface import OrderRequest
+            if not _replay:
+                self.order_manager.gateway.submit(OrderRequest(t.symbol, "SELL" if t.direction == "LONG" else "BUY",
+                                                               t.remaining_qty, client_id=f"{trade_id}-close", tag="SM-MANUAL"))
+            TradeManager(self.cfg, ExecutionModel(self.cfg)).force_close(t, i, bar, ExitReason.MANUAL_CLOSE)
+            self.paper.open_trades.remove(t)
+            self.paper.trades.append(t)
+            self._after_manual_change()
+            if not _replay:
+                self._save_manual_action({"trade_id": trade_id, "entry_time": t.entry_time.isoformat(), "action": "CLOSE",
+                                          "at": datetime.now().isoformat()})
+                log("order", f"{t.symbol} closed manually at {t.exit_price:.2f}", trade_id=trade_id)
+                self.bus.publish("POSITION_CLOSED", {"symbol": t.symbol, "reason": ExitReason.MANUAL_CLOSE,
+                                                     "price": round(t.exit_price, 2), "trade_id": trade_id})
+            return t.to_dict()
+
+    def manual_stop(self, trade_id: str, new_stop: float, _replay: bool = False) -> Dict:
+        """Tighten the stop of an open paper trade. Section 26: stops may tighten but never loosen."""
+        if not _replay:
+            self._manual_guard()
+        new_stop = float(new_stop)
+        if not math.isfinite(new_stop) or new_stop <= 0:
+            raise ValueError("Stop must be a positive number")
+        with self.lock:
+            t = self._open_paper_trade(trade_id)
+            last = self.datasets[t.symbol].bars[-1]
+            sign = 1 if t.direction == "LONG" else -1
+            if (new_stop - t.current_stop) * sign <= 0:
+                raise ValueError(f"A stop may only tighten: current {t.current_stop:.2f}, requested {new_stop:.2f}")
+            if (last.close - new_stop) * sign <= 0:
+                raise ValueError(f"Stop {new_stop:.2f} is through the last close {last.close:.2f}; close the trade instead")
+            t.trail_history.append({"time": last.close_time.isoformat(), "bar": len(self.datasets[t.symbol].bars) - 1,
+                                    "old": round(t.current_stop, 2), "new": round(new_stop, 2),
+                                    "reason": "Manual stop tighten", "pivot": None})
+            t.current_stop = new_stop
+            t.stop_kind = ExitReason.MANUAL_SL
+            self._after_manual_change()
+            if not _replay:
+                self._save_manual_action({"trade_id": trade_id, "entry_time": t.entry_time.isoformat(), "action": "STOP",
+                                          "stop": new_stop, "at": datetime.now().isoformat()})
+                log("stop", f"{t.symbol} stop tightened manually to {new_stop:.2f}", trade_id=trade_id)
+                self.bus.publish("SL_MODIFIED", {"symbol": t.symbol, "stop": round(new_stop, 2), "reason": "manual"})
+            return t.to_dict()
+
+    def _replay_manual_actions(self) -> None:
+        """Re-apply saved manual actions after a rebuild re-simulated the paper session."""
+        for a in self._load_manual_actions():
+            try:
+                t = self._open_paper_trade(a["trade_id"])
+                if a.get("entry_time") and t.entry_time.isoformat() != a["entry_time"]:
+                    continue  # same id, different trade (the session was re-simulated with other settings)
+                if a.get("action") == "CLOSE":
+                    self.manual_close(a["trade_id"], _replay=True)
+                elif a.get("action") == "STOP":
+                    self.manual_stop(a["trade_id"], a["stop"], _replay=True)
+            except (KeyError, ValueError):
+                continue  # trade already closed by the engine, or the stop is no longer a tightening
+
+    def _after_manual_change(self) -> None:
+        self.paper_report = self.report(self.paper, with_attribution=False)
+        self.scan = scan(self.datasets, self.cfg, self.paper.open_trades)
+        self._scan_cache = {"1D": self.scan}
 
     def _anchor_symbol(self) -> str:
         return "NIFTY" if "NIFTY" in self.datasets else next(iter(self.datasets))

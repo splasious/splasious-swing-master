@@ -83,6 +83,8 @@ class ExitReason:
     MAX_HOLDING = "MAX_HOLDING"
     PORTFOLIO_RISK = "PORTFOLIO_RISK"
     END_OF_DATA = "END_OF_DATA"
+    MANUAL_CLOSE = "MANUAL_CLOSE"
+    MANUAL_SL = "MANUAL_SL"
 
 
 # --------------------------------------------------------------------------- #

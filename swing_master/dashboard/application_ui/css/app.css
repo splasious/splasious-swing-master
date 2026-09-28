@@ -117,6 +117,11 @@ svg text { font-family: var(--font-num); }
 .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--up); box-shadow: 0 0 0 3px var(--up-soft); }
 .status-dot.warn { background: var(--warn); box-shadow: 0 0 0 3px var(--warn-soft); }
 .status-dot.off { background: var(--muted); box-shadow: none; }
+.status-dot.err { background: var(--down); box-shadow: 0 0 0 3px var(--down-soft, transparent); }
+a.status-pill { text-decoration: none; }
+a.status-pill:hover .pill-text { color: var(--text); }
+.status-row { display: inline-flex; align-items: center; gap: 6px; }
+.nav-item .nav-dot { margin-left: auto; flex: 0 0 auto; width: 7px; height: 7px; }
 
 /* skin picker */
 .skin-pop {
@@ -221,6 +226,14 @@ svg text { font-family: var(--font-num); }
 .btn:hover { background: var(--panel-hover); }
 .btn-primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .btn-primary:hover { background: var(--accent); filter: brightness(1.08); }
+.btn-danger { color: var(--down); border-color: color-mix(in srgb, var(--down) 45%, var(--border)); }
+.btn-danger:hover { background: var(--down-soft); }
+.manage { padding: 10px 12px; margin-bottom: 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--panel-2, var(--panel)); }
+.manage-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px; }
+.manage-row .ctx-field { display: grid; gap: 4px; }
+.manage-row .input { width: 140px; }
+.manage-confirm { margin-top: 8px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 13px; }
+.manage-confirm[hidden] { display: none; }
 .btn[disabled] { opacity: 0.55; cursor: not-allowed; }
 .btn svg { width: 16px; height: 16px; }
 .chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 11px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel-2);
@@ -377,7 +390,7 @@ details.more summary::-webkit-details-marker { display: none; }
 }
 @media (max-width: 1360px) {
   .brand-tag { display: none; }
-  .status-pill.hide-md { display: none; }
+  .status-pill.hide-md .pill-text { display: none; }  /* dot only; the label stays in the tooltip */
 }
 @media (max-width: 1200px) {
   .ribbon { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -411,6 +424,7 @@ details.more summary::-webkit-details-marker { display: none; }
   .sidebar .nav-group:first-child { border-top: 0; padding-top: 0; }
   .sidebar .nav-item { justify-content: center; padding: 10px 0; }
   .sidebar .nav-item .count { position: absolute; margin: -22px 0 0 26px; font-size: 10px; padding: 0 5px; }
+  .sidebar .nav-item .nav-dot { position: absolute; margin: -20px 0 0 24px; }
   .sidebar .nav-item { position: relative; }
   .shell.nav-open .sidebar {
     position: fixed; top: 0; left: 0; bottom: 0; z-index: 85; width: 270px; height: auto; align-self: stretch; overscroll-behavior: contain;
@@ -421,6 +435,7 @@ details.more summary::-webkit-details-marker { display: none; }
   .shell.nav-open .sidebar .side-foot { display: grid; }
   .shell.nav-open .sidebar .nav-item { justify-content: flex-start; padding: 8px 10px; }
   .shell.nav-open .sidebar .nav-item .count { position: static; margin: 0 0 0 auto; }
+  .shell.nav-open .sidebar .nav-item .nav-dot { position: static; margin: 0 0 0 auto; }
 }
 
 /* ---------------- responsive: phone ---------------- */
