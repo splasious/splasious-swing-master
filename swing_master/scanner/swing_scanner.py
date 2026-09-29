@@ -32,6 +32,21 @@ def _fmt_zone(z: Dict) -> str:
     return f"{z['pattern']} {z['proximal']:.2f}-{z['distal']:.2f}"
 
 
+SETUP_TYPES = ("BOS pullback", "Trend pullback", "CHoCH reversal", "Counter-trend")
+
+
+def setup_type(direction: str, structure: str, last_event) -> str:
+    """Plain-language setup family from confirmed structure only (no new rule, a label for filtering)."""
+    side = "BULLISH" if direction == "LONG" else "BEARISH"
+    ev_dir = (last_event.direction or "").upper() if last_event is not None else ""
+    ev_type = (last_event.event_type or "").upper() if last_event is not None else ""
+    if structure == side:
+        return "BOS pullback" if ev_dir == side and ev_type == "BOS" else "Trend pullback"
+    if ev_dir == side and ev_type == "CHOCH":
+        return "CHoCH reversal"
+    return "Counter-trend"
+
+
 def _base_row(ds, spec) -> Dict:
     an = ds.analyzer
     bar, prev = an.bars[-1], an.bars[-2] if len(an.bars) > 1 else an.bars[-1]
@@ -49,6 +64,7 @@ def _base_row(ds, spec) -> Dict:
                                                    "time": last_p.pivot_timestamp.date().isoformat(),
                                                    "confirmed": last_p.confirmation_timestamp.date().isoformat()},
         "structure_event": None if last_ev is None else f"{last_ev.direction.title()} {last_ev.event_type}",
+        "setup_type": setup_type(spec.direction, an.structure.trend, last_ev),
         "positioning": "UNAVAILABLE",
         "oi_state": oi["state"] if oi else "UNAVAILABLE",
         "pcr": pcr.get("pcr") if pcr else None,

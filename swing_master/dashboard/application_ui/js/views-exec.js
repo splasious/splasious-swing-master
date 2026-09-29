@@ -64,13 +64,24 @@
   SM.views.setup = {
     title: "Trade Setup", icon: "setup", group: "Execution",
     async render(el) {
+      const tabs = [["plan", "Trade plan"], ["why", "Why / why not"], ["invalidation", "Invalidation"], ["context", "Market context"], ["notes", "Notes"]];
+      const cur = tabs.some(([k]) => k === SM.state.setupTab) ? SM.state.setupTab : "plan";
       el.innerHTML = `<div class="view-head"><div><h1>Trade decision</h1><p>Every rule, every factor, every point. Accepted and rejected setups expose the same rule-by-rule path.</p></div>
-        <div class="actions"><div class="ctx-field"><label for="su-sym">Symbol</label>${ui.symbolSelect("su-sym", SM.state.symbol)}</div></div></div><div id="su"></div>`;
+        <div class="actions"><div class="ctx-field"><label for="su-sym">Symbol</label>${ui.symbolSelect("su-sym", SM.state.symbol)}</div></div></div>
+        <div class="tabbar">${ui.seg("sutab", tabs, cur, true)}</div><div id="su"></div>`;
       el.querySelector("#su-sym").addEventListener("change", (e) => { SM.setState({ symbol: e.target.value }); draw(); });
       const body = el.querySelector("#su");
+      const showTab = (tab) => {
+        SM.state.setupTab = tab;
+        body.querySelectorAll("[data-panel]").forEach((x) => { x.hidden = x.dataset.panel !== tab; });
+      };
+      ui.bindSeg(el, "sutab", showTab);
       const draw = () => ui.load(body, async () => {
         const d = await SM.api.get("/api/setup", { symbol: SM.state.symbol, tf: "1D" });
         if (d.mode === "EVALUATED") renderEvaluated(body, d); else renderNoTrigger(body, d);
+        body.insertAdjacentHTML("beforeend", invalidationPanel(d) + notesPanel(d.symbol));
+        bindNotes(body, d.symbol);
+        showTab(SM.state.setupTab || "plan");
       });
       draw();
     },
@@ -89,7 +100,7 @@
     const accepted = dec.accepted;
     const rows = conf.rows.map((r) => ({ ...r, source: (ev.factor_meta[r.key] || {}).source }));
     const verdict = accepted ? `${esc(ev.direction)} CANDIDATE` : `${esc(ev.direction)} REJECTED`;
-    body.innerHTML = `
+    body.innerHTML = `<div data-panel="plan" class="grid">
       <div class="grid g-main-l">
         ${ui.card({ title: `${esc(d.symbol)} — ${verdict}`, actions: ui.status(accepted ? "READY" : "REJECTED"), body: `
           <div class="big-score"><span class="n ${accepted ? "up" : ""}">${SM.fmt(conf.score, 0)}</span><span class="d">/ 100</span>
@@ -106,7 +117,12 @@
       <div class="grid g-2">
         ${ui.card({ title: "Visual trade plan", sub: `${esc(ev.entry_mode.replace(/_/g, " ").toLowerCase())} entry`, body: '<div id="su-ladder"></div>' })}
         ${ui.card({ title: "Position sizing", body: planKv(d.plan) })}
+      </div></div>
+      <div data-panel="why" class="grid" hidden>
+        ${ui.card({ title: accepted ? "Why this trade?" : "Why no trade?", body: ui.checklist(d.why.map((w) => ({ ok: w.ok, text: w.text }))) })}
+        ${ui.card({ title: "Rule-by-rule decision path", sub: "hard rules must pass; soft rules only affect the score", body: rulePath(dec.rules), flush: true })}
       </div>
+      <div data-panel="context" class="grid" hidden>
       <div class="grid g-3">
         ${ui.card({ title: "Zone at decision", body: ui.kv([
           ["Zone", `<b class="${ev.zone.type === "DEMAND" ? "up" : "down"}">${esc(SM.title(ev.zone.type))} ${esc(ev.zone.pattern)}</b>`],
@@ -129,13 +145,13 @@
           ["Range / ATR", SM.fmt(ev.pattern.metrics.atr_range, 2)], ["Close location", SM.pct(ev.pattern.metrics.close_location, 0)],
           ["Previous candle", esc(ev.pattern.metrics.previous_relationship)]]) : ui.empty("No reversal candle on the decision bar") })}
       </div>
-      ${historyCard(d)}`;
+      ${historyCard(d)}</div>`;
     SM.charts.ladder(body.querySelector("#su-ladder"), { ...d.plan, zone: ev.zone });
     bindHistory(body, d);
   }
 
   function renderNoTrigger(body, d) {
-    body.innerHTML = `
+    body.innerHTML = `<div data-panel="plan" class="grid">
       <div class="grid g-main-l">
         ${ui.card({ title: `${esc(d.symbol)} — why no trade?`, actions: ui.status("WAIT"), body: `
           <p class="muted" style="margin-top:0">Price ${SM.fmt(d.price)} did not trade into a qualified zone on the latest bar, so the decision engine had nothing to evaluate. Here is what each direction still needs.</p>
@@ -145,9 +161,39 @@
           ${d.plan ? ui.card({ title: "Projected plan", sub: "if price reaches the nearest qualified zone", actions: ui.badge("Projected", "b-warn"), body: '<div id="su-ladder"></div>' + planKv(d.plan) }) : ui.card({ title: "Projected plan", body: ui.empty("No qualified zone nearby") })}
         </div>
       </div>
-      ${historyCard(d)}`;
+      </div>
+      <div data-panel="why" class="grid" hidden>${ui.card({ title: `${esc(d.symbol)} — why no trade?`, body: d.checklist.map((c) => `<h3 class="section-title">${esc(c.direction)}</h3>${ui.checklist(c.items)}`).join("") })}</div>
+      <div data-panel="context" class="grid" hidden>${historyCard(d)}</div>`;
     if (d.plan) SM.charts.ladder(body.querySelector("#su-ladder"), d.plan);
     bindHistory(body, d);
+  }
+
+  function rulePath(rules) {
+    return `<div class="rule-path">${(rules || []).map((r) => `<div class="rp ${r.passed === true ? "ok" : r.passed === false ? "bad" : "na"}">
+      <span class="rp-i">${r.passed === true ? "✓" : r.passed === false ? "✗" : "–"}</span><b>${esc(r.rule)}</b>
+      <span class="badge ${r.hard ? "b-accent" : ""}">${r.hard ? "hard" : "soft"}</span><span class="muted">${esc(r.detail || "")}</span></div>`).join("")}</div>`;
+  }
+
+  function invalidationPanel(d) {
+    const rules = d.invalidation || [];
+    return `<div data-panel="invalidation" class="grid" hidden>${ui.card({ title: "Where the thesis is wrong",
+      sub: d.mode === "EVALUATED" ? "exit rules the trade manager applies to this setup" : "for the projected plan",
+      body: rules.length ? `<div class="rule-path">${rules.map((r) => `<div class="rp ${r.active ? "bad" : "na"}"><span class="rp-i">${r.active ? "!" : "–"}</span>
+        <b>${esc(r.rule)}</b><span class="muted">${esc(r.detail)}</span></div>`).join("")}</div>` : ui.empty("No plan on this symbol yet", "Invalidation levels appear once a zone qualifies."),
+      note: "Stops only ever tighten. Change the zone-invalidation mode, opposite-event exits and holding period in Settings." })}</div>`;
+  }
+
+  function notesPanel(symbol) {
+    const note = SM.store.get("sm.notes." + symbol, "");
+    return `<div data-panel="notes" class="grid" hidden>${ui.card({ title: `Notes — ${esc(symbol)}`, sub: "saved in this browser only",
+      body: `<textarea class="input notes" id="su-notes" rows="8" placeholder="Your thesis, what to watch, why you skipped it…">${esc(note)}</textarea>
+        <div class="muted" id="su-notes-st" style="font-size:12px;margin-top:6px">${note ? "Saved" : "Nothing saved yet"}</div>` })}</div>`;
+  }
+
+  function bindNotes(body, symbol) {
+    const ta = body.querySelector("#su-notes"), st = body.querySelector("#su-notes-st");
+    if (!ta) return;
+    ta.addEventListener("input", SM.debounce(() => { SM.store.set("sm.notes." + symbol, ta.value); st.textContent = "Saved " + new Date().toLocaleTimeString(); }, 400));
   }
 
   function historyCard(d) {

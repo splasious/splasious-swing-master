@@ -71,9 +71,12 @@ def collect(p) -> Dict[str, Any]:
     mtf_syms = focus | {r["symbol"] for r in p.scan["rows"] if r["status"] != "REJECTED"}
     for s in sorted(mtf_syms):
         put("/api/mtf", {"symbol": s}, lambda s=s: api.mtf_payload(p, s))
+        # the multi-timeframe layout's 1H entry chart; its bars were already loaded for /api/mtf
+        put("/api/chart", {"symbol": s, "tf": "1H", "profile": "FIXED"}, lambda s=s: api.chart(p, s, "1H", "FIXED", 260))
     for inst in p.universe:
         s = inst.symbol
         put("/api/chart", {"symbol": s, "tf": "1D", "profile": "FIXED"}, lambda s=s: api.chart(p, s, "1D", "FIXED", 260))
+        put("/api/chart", {"symbol": s, "tf": "1W", "profile": "FIXED"}, lambda s=s: api.chart(p, s, "1W", "FIXED", 260))
         put("/api/setup", {"symbol": s, "tf": "1D"}, lambda s=s: api.setup_payload(p, s, "1D"))
         put("/api/zones", {"symbol": s, "tf": "1D"}, lambda s=s: api.zones_payload(p, s, "1D"))
         put("/api/volume-profile", {"symbol": s, "tf": "1D", "type": "FIXED"},
@@ -81,7 +84,7 @@ def collect(p) -> Dict[str, Any]:
         put("/api/candles", {"symbol": s, "tf": "1D", "lookback": 60}, lambda s=s: api.candles_payload(p, s, "1D", 60))
         put("/api/derivatives", {"symbol": s, "days": 30}, lambda s=s: api.derivatives_payload(p, s, 30))
     for s in focus:
-        for tf in ("1M", "1W", "4H", "1H", "15m", "5m"):
+        for tf in ("1M", "4H", "15m", "5m"):
             put("/api/chart", {"symbol": s, "tf": tf, "profile": "FIXED"}, lambda s=s, tf=tf: api.chart(p, s, tf, "FIXED", 260))
         for prof in ("SWING", "STRUCTURAL_LEG", "DAILY", "WEEKLY"):
             put("/api/chart", {"symbol": s, "tf": "1D", "profile": prof}, lambda s=s, pr=prof: api.chart(p, s, "1D", pr, 260))

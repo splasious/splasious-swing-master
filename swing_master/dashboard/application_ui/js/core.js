@@ -96,9 +96,50 @@
     eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
     pie: '<path d="M21 12A9 9 0 1 1 12 3v9z"/><path d="M15 3.5A9 9 0 0 1 20.5 9H15z"/>',
     zap: '<path d="M13 2 3 14h9l-1 8 10-12h-9z"/>',
+    pointer: '<path d="m4 4 7 16 2.5-6.5L20 11z"/>',
+    trendline: '<path d="M4 19 20 5"/><circle cx="4" cy="19" r="1.6"/><circle cx="20" cy="5" r="1.6"/>',
+    hline: '<path d="M3 12h18"/><circle cx="7" cy="12" r="1.6"/>',
+    ruler: '<path d="M3 17 17 3l4 4L7 21z"/><path d="m7 13 2 2M10 10l2 2M13 7l2 2"/>',
+    undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10a6 6 0 0 1 0 12h-3"/>',
+    trash: '<path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/>',
+    pause: '<path d="M8 5v14M16 5v14"/>',
+    stepback: '<path d="M6 5v14M18 5 9 12l9 7z"/>',
+    stepfwd: '<path d="M18 5v14M6 5l9 7-9 7z"/>',
+    expand: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
+    shrink: '<path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/>',
+    wave: '<path d="M2 15c3 0 4-8 7-8s4 10 7 10 4-6 6-6"/>',
   };
   SM.icon = (name, cls = "") =>
     `<svg class="${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${P[name] || P.info}</svg>`;
+
+  // ------------------------------------------------------------------ watchlist (per browser)
+  SM.watchlist = {
+    all() { return SM.store.get("sm.watchlist", []); },
+    has(sym) { return this.all().includes(sym); },
+    toggle(sym) {
+      const list = this.all();
+      const next = list.includes(sym) ? list.filter((x) => x !== sym) : list.concat([sym]);
+      SM.store.set("sm.watchlist", next);
+      document.dispatchEvent(new CustomEvent("sm:watchlist"));
+      return next.includes(sym);
+    },
+    star(sym) {
+      const on = this.has(sym);
+      return `<button class="star ${on ? "on" : ""}" type="button" data-star="${SM.esc(sym)}" aria-pressed="${on}" aria-label="${on ? "Remove from" : "Add to"} watchlist" title="${on ? "Remove from" : "Add to"} watchlist">${on ? "★" : "☆"}</button>`;
+    },
+  };
+  // one delegated handler for every star button on the page
+  document.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-star]");
+    if (!b) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const on = SM.watchlist.toggle(b.dataset.star);
+    document.querySelectorAll(`[data-star="${CSS.escape(b.dataset.star)}"]`).forEach((x) => {
+      x.classList.toggle("on", on); x.textContent = on ? "★" : "☆"; x.setAttribute("aria-pressed", String(on));
+    });
+    SM.toast(on ? `${b.dataset.star} added to watchlist` : `${b.dataset.star} removed from watchlist`);
+  }, true);
 
   // ------------------------------------------------------------------ API
   class Unavailable extends Error {}

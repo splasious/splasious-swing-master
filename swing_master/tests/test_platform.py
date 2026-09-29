@@ -111,6 +111,44 @@ class PlatformTests(unittest.TestCase):
             self.assertEqual(chart["symbol"], "RELIANCE")
             self.assertEqual(len(list((Path(tmp) / "d").iterdir())), n)
             self.assertIn('localStorage.getItem("sm.skin"', html)
+            # the Weekly / Daily / 1H layout: weekly for every symbol, 1H for the focus symbol
+            for sym in SYMBOLS:
+                self.assertIn(f"/api/chart?profile=FIXED&symbol={sym}&tf=1W", snap["files"])
+            focus = api.overview(self.p)["focus_symbol"]
+            self.assertIn(f"/api/chart?profile=FIXED&symbol={focus}&tf=1H", snap["files"])
+
+    def test_scanner_rows_carry_setup_type(self):
+        from swing_master.scanner.swing_scanner import SETUP_TYPES
+        rows = api.scanner(self.p)["rows"]
+        self.assertTrue(rows)
+        for r in rows:
+            self.assertIn(r["setup_type"], SETUP_TYPES)
+
+    def test_setup_type_labels(self):
+        from types import SimpleNamespace as NS
+        from swing_master.scanner.swing_scanner import setup_type
+        bos_up, choch_up = NS(direction="BULLISH", event_type="BOS"), NS(direction="BULLISH", event_type="CHOCH")
+        self.assertEqual(setup_type("LONG", "BULLISH", bos_up), "BOS pullback")
+        self.assertEqual(setup_type("LONG", "BULLISH", None), "Trend pullback")
+        self.assertEqual(setup_type("LONG", "BEARISH", choch_up), "CHoCH reversal")
+        self.assertEqual(setup_type("SHORT", "BULLISH", bos_up), "Counter-trend")
+        self.assertEqual(setup_type("SHORT", "BEARISH", NS(direction="BEARISH", event_type="BOS")), "BOS pullback")
+
+    def test_invalidation_rules(self):
+        cfg = self.p.cfg
+        long_rules = {r["rule"]: r for r in api.invalidation_rules(cfg, "LONG", 95.0, 97.5, "below HL")}
+        self.assertEqual(list(long_rules)[:2], ["Structural stop", "Zone invalidation"])
+        self.assertIn("below 95.00 (below HL)", long_rules["Structural stop"]["detail"])
+        self.assertIn("Lower Low", long_rules["Structural failure"]["detail"])
+        self.assertIn(str(cfg.MAX_HOLDING_BARS), long_rules["Time stop"]["detail"])
+        short_rules = {r["rule"]: r for r in api.invalidation_rules(cfg, "SHORT", 105.0, None)}
+        self.assertNotIn("Zone invalidation", short_rules)
+        self.assertIn("above 105.00", short_rules["Structural stop"]["detail"])
+        self.assertIn("Higher High", short_rules["Structural failure"]["detail"])
+        for sym in SYMBOLS:  # every setup payload with a plan explains where the idea is wrong
+            out = api.setup_payload(self.p, sym)
+            if out.get("plan"):
+                self.assertTrue(out["invalidation"], sym)
 
     def test_audit_log_categories(self):
         cats = set(api.health_payload(self.p)["log_counts"])

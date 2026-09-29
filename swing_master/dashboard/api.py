@@ -54,6 +54,7 @@ def meta(p) -> Dict:
         "min_conf": p.cfg.MIN_CONFLUENCE_SCORE, "min_zone": p.cfg.MIN_ZONE_SCORE,
         "scanner_timeframes": ["1W", "1D", "4H", "1H"], "mtf_hierarchy": p.cfg.MTF_HIERARCHY,
         "data_status": data_status(p), "broker": broker_summary(p),
+        "risk_per_trade": p.cfg.RISK_PER_TRADE, "max_positions": p.cfg.MAX_POSITIONS,
     }
 
 
@@ -408,6 +409,31 @@ def _pattern_definitions() -> List[Dict]:
 
 
 # --------------------------------------------------------------------------- #
+def invalidation_rules(cfg, direction: str, stop: Optional[float], zone_distal: Optional[float],
+                       stop_note: str = "") -> List[Dict]:
+    """Where the thesis is wrong: the exit rules the trade manager will apply (Sections 23, 27), in words."""
+    long = direction == "LONG"
+    side, fail, opp = ("below", "Lower Low (LL)", "bearish") if long else ("above", "Higher High (HH)", "bullish")
+    rules = []
+    if stop is not None:
+        rules.append({"rule": "Structural stop", "active": True,
+                      "detail": f"Price trades {side} {stop:,.2f}" + (f" ({stop_note})" if stop_note else "")})
+    if zone_distal is not None:
+        how = "closes" if cfg.ZONE_INVALIDATION_MODE == "CLOSE" else "trades (wick)"
+        rules.append({"rule": "Zone invalidation", "active": cfg.EXIT_ON_ZONE_INVALIDATION,
+                      "detail": f"A candle {how} {side} the zone distal {zone_distal:,.2f}"})
+    rules.append({"rule": "Structural failure", "active": cfg.EXIT_ON_STRUCTURAL_FAILURE,
+                  "detail": f"A confirmed {fail} forms after entry"})
+    rules.append({"rule": "Opposite structure event", "active": cfg.EXIT_ON_OPPOSITE_EVENT != "OFF",
+                  "detail": f"A confirmed {opp} {'BOS or CHoCH' if cfg.EXIT_ON_OPPOSITE_EVENT == 'CHOCH' else 'BOS'}"
+                            + (" (switched off in Settings)" if cfg.EXIT_ON_OPPOSITE_EVENT == "OFF" else "")})
+    rules.append({"rule": "Time stop", "active": True, "detail": f"{cfg.MAX_HOLDING_BARS} bars without reaching T3"})
+    rules.append({"rule": "Portfolio risk", "active": cfg.PORTFOLIO_EXIT_ON_DAILY_LOSS,
+                  "detail": f"Day's loss beyond {cfg.MAX_DAILY_LOSS:.0%} of equity, or drawdown beyond "
+                            f"{cfg.MAX_DRAWDOWN_HALT:.0%}, flattens every position"})
+    return rules
+
+
 def setup_payload(p, symbol: str, tf: str = "1D") -> Dict:
     ds = p.dataset(symbol, tf)
     an = ds.analyzer
@@ -427,7 +453,9 @@ def setup_payload(p, symbol: str, tf: str = "1D") -> Dict:
                              best.lot_size, p.cfg.MAX_POSITION_PERCENT, equity) if best.stop else None
         out.update({"mode": "EVALUATED", "evaluation": to_jsonable(best.to_dict()), "why": why_lines(best),
                     "plan": _plan(p, best.direction, best.entry_ref, best.stop, best.targets, size, equity,
-                                  best.zone, best.lot_size)})
+                                  best.zone, best.lot_size),
+                    "invalidation": invalidation_rules(p.cfg, best.direction, best.stop, best.zone.get("distal"),
+                                                       getattr(best, "stop_note", ""))})
         return out
     # WHY NO TRADE -- nothing interacted with a zone at the latest bar
     reasons = []
@@ -470,6 +498,7 @@ def setup_payload(p, symbol: str, tf: str = "1D") -> Dict:
         size = position_size(equity, p.cfg.RISK_PER_TRADE, entry, stop, ds.instrument.lot_size,
                              p.cfg.MAX_POSITION_PERCENT, equity)
         out["plan"] = _plan(p, projected["direction"], entry, stop, tg, size, equity, None, ds.instrument.lot_size)
+        out["invalidation"] = invalidation_rules(p.cfg, projected["direction"], stop, None, "projected")
         out["plan"]["projected"] = True
     return out
 

@@ -2,6 +2,8 @@
  * CandleChart: candles (hollow = up, filled = down, so direction never relies on colour),
  * confirmed ZigZag, HH/HL/LH/LL labels with confirmation markers, BOS/CHoCH, demand/supply,
  * volume profile (POC/VAH/VAL), trade levels, trail, markers.  Keyboard: arrows, + / -, 0.
+ * Full-size charts add tools: indicators, horizontal/trend lines, measure, undo/clear, log scale,
+ * look-ahead-safe bar replay and full screen.
  */
 (function () {
   "use strict";
@@ -270,48 +272,120 @@
     observe(el, draw);
   };
 
+  // ------------------------------------------------------------------ indicator series
+  // Every value uses only its own bar and earlier ones, so indicators stay honest during bar replay.
+  const INDICATORS = [
+    { k: "ema20", label: "EMA 20", c: "var(--info)" },
+    { k: "ema50", label: "EMA 50", c: "var(--warn)" },
+    { k: "ema200", label: "EMA 200", c: "var(--accent)" },
+    { k: "sma50", label: "SMA 50", c: "var(--text-2)", dash: "5 3" },
+    { k: "bb", label: "Bollinger 20, 2σ", c: "var(--muted)", dash: "3 3" },
+    { k: "vwap", label: "VWAP (session)", c: "var(--text)", dash: "6 3", intraday: true },
+  ];
+  function ema(bars, n) {
+    const out = new Array(bars.length).fill(null), a = 2 / (n + 1);
+    let e = null, sum = 0;
+    bars.forEach((b, i) => {
+      if (i < n) { sum += b.c; if (i === n - 1) e = out[i] = sum / n; return; }
+      e = out[i] = b.c * a + e * (1 - a);
+    });
+    return out;
+  }
+  function sma(bars, n) {
+    const out = new Array(bars.length).fill(null);
+    let sum = 0;
+    bars.forEach((b, i) => { sum += b.c; if (i >= n) sum -= bars[i - n].c; if (i >= n - 1) out[i] = sum / n; });
+    return out;
+  }
+  function bollinger(bars, n = 20, m = 2) {
+    const mid = sma(bars, n), up = mid.slice(), dn = mid.slice();
+    for (let i = n - 1; i < bars.length; i++) {
+      let v = 0;
+      for (let j = i - n + 1; j <= i; j++) v += (bars[j].c - mid[i]) ** 2;
+      const sd = Math.sqrt(v / n);
+      up[i] = mid[i] + m * sd; dn[i] = mid[i] - m * sd;
+    }
+    return { mid, up, dn };
+  }
+  function vwap(bars) {
+    // bar times are exchange-local ISO strings, so the date prefix is the NSE session date
+    const out = new Array(bars.length).fill(null);
+    let day = null, pv = 0, vol = 0;
+    bars.forEach((b, i) => {
+      const d = String(b.t).slice(0, 10);
+      if (d !== day) { day = d; pv = 0; vol = 0; }
+      pv += ((b.h + b.l + b.c) / 3) * b.v; vol += b.v;
+      out[i] = vol > 0 ? pv / vol : null;
+    });
+    return out;
+  }
+  charts.series = { ema, sma, bollinger, vwap };
+
+  const tbtn = (attrs, icon, label, text) =>
+    `<button type="button" class="ct-btn" ${attrs} aria-label="${label}" title="${label}">${SM.icon(icon)}${text ? `<span>${text}</span>` : ""}</button>`;
+  const r2 = (v) => Math.round(v * 100) / 100;
+
   // ------------------------------------------------------------------ candle chart
   class CandleChart {
     constructor(el, data, opts = {}) {
       this.el = el;
       this.data = data;
       this.o = Object.assign({ height: 460, visible: 160, volume: true, profile: true, zones: true, zigzag: true,
-        labels: true, events: true, levels: true, markers: true, hollow: SM.store.get("sm.hollow", true), onPivot: null }, opts);
+        labels: true, events: true, levels: true, markers: true, hollow: SM.store.get("sm.hollow", true), onPivot: null, tools: false }, opts);
+      this.cursor = null;
+      this.userZoomed = false;
+      this.mode = "pan";        // pan | hline | trend | measure
+      this.pending = null;      // first point of a two-click tool
+      this.measure = null;
+      this.replay = null;       // { end, timer }: last bar shown while replaying
+      this.intraday = !["1D", "1W", "1M"].includes(data.timeframe);
+      this.logScale = !!(this.o.tools && SM.store.get("sm.logscale", false));
+      this.ind = this.o.tools ? SM.store.get("sm.ind", {}) : {};
+      this.drawKey = this.o.tools ? `sm.draw.${data.symbol}.${data.timeframe}` : null;
+      this.drawings = this.drawKey ? SM.store.get(this.drawKey, []) : [];
+      el.innerHTML = `<div class="chart-wrap">${this.o.tools ? this.toolsHTML() : ""}
+        <div class="chart-box" tabindex="0" role="img" aria-roledescription="interactive chart"
+        aria-label="${esc(data.symbol)} ${esc(data.timeframe)} candlestick chart. Arrow keys move the cursor, plus and minus zoom, 0 resets${this.o.tools ? ", Escape cancels a drawing tool" : ""}.">
+        <div class="chart-readout"></div><svg></svg>
+        <div class="zoom-ctl"><button type="button" data-z="in" aria-label="Zoom in">+</button><button type="button" data-z="out" aria-label="Zoom out">−</button><button type="button" data-z="reset" aria-label="Reset zoom">⟲</button></div></div>
+        ${this.o.tools ? this.replayHTML() : ""}</div>`;
+      this.wrap = el.querySelector(".chart-wrap");
+      this.box = el.querySelector(".chart-box");
+      this.svg = this.box.querySelector(":scope > svg");
+      this.readout = el.querySelector(".chart-readout");
       const n = data.bars.length;
       this.end = n - 1;
       this.start = Math.max(0, n - this.fitVisible());
-      this.cursor = null;
-      this.userZoomed = false;
-      el.innerHTML = `<div class="chart-box" tabindex="0" role="img" aria-roledescription="interactive chart"
-        aria-label="${esc(data.symbol)} ${esc(data.timeframe)} candlestick chart. Arrow keys move the cursor, plus and minus zoom, 0 resets.">
-        <div class="chart-readout"></div><svg></svg>
-        <div class="zoom-ctl"><button type="button" data-z="in" aria-label="Zoom in">+</button><button type="button" data-z="out" aria-label="Zoom out">−</button><button type="button" data-z="reset" aria-label="Reset zoom">⟲</button></div></div>`;
-      this.box = el.querySelector(".chart-box");
-      this.svg = el.querySelector("svg");
-      this.readout = el.querySelector(".chart-readout");
       this.bind();
+      if (this.o.tools) this.bindTools();
       this.render();
-      observe(el, () => this.resize());
+      observe(this.box, () => this.resize());
     }
     set(opts) { Object.assign(this.o, opts); this.render(); }
+    /** Number of bars that exist "now": all of them, or up to the replay bar. */
+    n() { return this.replay ? this.replay.end + 1 : this.data.bars.length; }
+    width() { return this.box.clientWidth || this.el.clientWidth || 800; }
     fitVisible() {
       // fewer, wider candles on narrow screens so bodies stay readable (about 6 px per candle minimum)
-      const w = this.el.clientWidth || 800;
-      return Math.max(30, Math.min(this.o.visible, Math.floor(w / 6)));
+      return Math.max(30, Math.min(this.o.visible, Math.floor(this.width() / 6)));
     }
     fitHeight(W) {
+      if (this.fs) {
+        const used = (this.tb ? this.tb.offsetHeight : 0) + (this.rb && !this.rb.hidden ? this.rb.offsetHeight + 8 : 0);
+        return Math.max(260, window.innerHeight - used - 44);
+      }
       return W < 700 ? Math.round(Math.min(this.o.height, Math.max(260, W * 0.8))) : this.o.height;
     }
     resize() {
       if (!this.userZoomed) {
-        const n = this.data.bars.length;
+        const n = this.n();
         this.end = n - 1;
         this.start = Math.max(0, n - this.fitVisible());
       }
       this.render();
     }
     zoom(f, anchor) {
-      const n = this.data.bars.length;
+      const n = this.n();
       const span = this.end - this.start + 1;
       const ns = Math.max(20, Math.min(n, Math.round(span * f)));
       const a = anchor != null ? anchor : this.end;
@@ -323,7 +397,7 @@
       this.render();
     }
     pan(bars) {
-      const n = this.data.bars.length, span = this.end - this.start;
+      const n = this.n(), span = this.end - this.start;
       let s = Math.max(0, Math.min(n - 1 - span, this.start + bars));
       this.start = s; this.end = s + span;
       this.render();
@@ -343,7 +417,7 @@
       let drag = null;
       this.svg.addEventListener("pointerdown", (e) => {
         this.box.focus({ preventScroll: true });
-        if (e.target.closest(".pivot-hit")) return;
+        if (this.mode !== "pan" || e.target.closest(".pivot-hit")) return; // drawing tools never drag the chart
         drag = { x: e.clientX, start: this.start };
         this.svg.setPointerCapture(e.pointerId);
       });
@@ -353,22 +427,24 @@
           const dx = ((e.clientX - drag.x) / r.width) * this.L.W;
           const bars = Math.round(-dx / this.L.step);
           const span = this.end - this.start;
-          const n = this.data.bars.length;
+          const n = this.n();
           const s = Math.max(0, Math.min(n - 1 - span, drag.start + bars));
           if (s !== this.start) { this.start = s; this.end = s + span; this.render(); }
           return;
         }
         const k = this.barAt(e);
         if (k != null) { this.cursor = k; this.drawCursor(e); }
+        if (this.mode !== "pan") { this.lastPt = this.pointAt(e); this.drawLive(); }
       });
       this.svg.addEventListener("pointerup", () => { drag = null; });
       this.svg.addEventListener("pointerleave", () => { drag = null; this.cursor = null; this.drawCursor(); });
       this.svg.addEventListener("click", (e) => {
+        if (this.mode !== "pan") { this.drawClick(e); return; }
         const hit = e.target.closest(".pivot-hit");
         if (hit && this.o.onPivot) this.o.onPivot(this.data.pivots[+hit.dataset.p]);
       });
       this.box.addEventListener("keydown", (e) => {
-        const n = this.data.bars.length;
+        const n = this.n();
         if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
           e.preventDefault();
           const c = this.cursor == null ? this.end : this.cursor + (e.key === "ArrowLeft" ? -1 : 1);
@@ -379,6 +455,8 @@
         } else if (e.key === "+" || e.key === "=") { this.zoom(0.75, this.cursor); }
         else if (e.key === "-" || e.key === "_") { this.zoom(1.35, this.cursor); }
         else if (e.key === "0") { this.userZoomed = false; this.resize(); }
+        else if (e.key === "Escape" && this.o.tools && this.mode !== "pan") { e.preventDefault(); this.setMode("pan"); }
+        else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && this.o.tools) { e.preventDefault(); this.undo(); }
       });
     }
     barAt(e) {
@@ -388,10 +466,287 @@
       const k = this.start + Math.floor((mx - this.L.padL) / this.L.step);
       return k < this.start || k > this.end ? null : k;
     }
+    /** Chart point under the pointer; the price snaps to the bar's open/high/low/close when within 8 px. */
+    pointAt(e) {
+      const L = this.L;
+      if (!L) return null;
+      const r = this.svg.getBoundingClientRect();
+      const mx = ((e.clientX - r.left) / r.width) * L.W, my = ((e.clientY - r.top) / r.height) * L.H;
+      if (mx < L.padL || mx > L.padL + L.plotW || my < L.padT || my > L.padT + L.priceH) return null;
+      const k = Math.max(this.start, Math.min(this.end, this.start + Math.floor((mx - L.padL) / L.step)));
+      const b = this.data.bars[k];
+      let p = L.yInv(my), best = 8;
+      [b.o, b.h, b.l, b.c].forEach((v) => { const dpx = Math.abs(L.y(v) - my); if (dpx < best) { best = dpx; p = v; } });
+      return { k, p, t: b.t };
+    }
+
+    // -------------------------------------------------------------- tools: toolbar, drawings, measure
+    toolsHTML() {
+      const na = (d) => d.intraday && !this.intraday;
+      return `<div class="chart-tools" role="toolbar" aria-label="Chart tools">
+        <details class="ct-menu"><summary class="ct-btn" title="Indicators">${SM.icon("wave")}<span>Indicators</span></summary>
+          <div class="ct-pop">${INDICATORS.map((d) => `<label class="ct-check${na(d) ? " disabled" : ""}"><input type="checkbox" data-ind="${d.k}" ${this.ind[d.k] && !na(d) ? "checked" : ""} ${na(d) ? "disabled" : ""}>
+            <i style="border-top-color:${d.c};border-top-style:${d.dash ? "dashed" : "solid"}"></i>${d.label}${na(d) ? ' <span class="muted">intraday only</span>' : ""}</label>`).join("")}
+            <p class="muted">Computed on the loaded bars. Each value uses only its own bar and earlier ones.</p></div></details>
+        <div class="ct-group" role="group" aria-label="Drawing tool">
+          ${tbtn('data-mode="pan" aria-pressed="true"', "pointer", "Pan and inspect")}
+          ${tbtn('data-mode="hline" aria-pressed="false"', "hline", "Horizontal line")}
+          ${tbtn('data-mode="trend" aria-pressed="false"', "trendline", "Trend line")}
+          ${tbtn('data-mode="measure" aria-pressed="false"', "ruler", "Measure")}
+        </div>
+        ${tbtn('data-act="undo"', "undo", "Undo last drawing")}
+        ${tbtn('data-act="clear"', "trash", "Clear drawings")}
+        <button type="button" class="ct-btn ct-text" data-act="log" aria-pressed="${this.logScale}" title="Logarithmic price scale">Log</button>
+        ${tbtn('data-act="replay" aria-pressed="false"', "repeat", "Bar replay", "Replay")}
+        ${document.fullscreenEnabled ? tbtn('data-act="fs"', "expand", "Full screen") : ""}
+        <span class="ct-hint" aria-live="polite"></span></div>`;
+    }
+    replayHTML() {
+      return `<div class="replay-bar" hidden><b class="rb-badge">Replay</b>
+        ${tbtn('data-rb="back"', "stepback", "Step back one bar")}
+        ${tbtn('data-rb="play"', "play", "Play")}
+        ${tbtn('data-rb="fwd"', "stepfwd", "Step forward one bar")}
+        <input type="range" class="rb-range" min="20" max="${Math.max(20, this.data.bars.length - 1)}" step="1" aria-label="Replay position">
+        <span class="rb-label"></span>
+        <button type="button" class="btn" data-rb="exit">Exit replay</button></div>`;
+    }
+    bindTools() {
+      this.tb = this.wrap.querySelector(".chart-tools");
+      this.rb = this.wrap.querySelector(".replay-bar");
+      this.hint = this.tb.querySelector(".ct-hint");
+      this.tb.querySelectorAll("[data-ind]").forEach((c) => c.addEventListener("change", () => {
+        this.ind = Object.assign({}, SM.store.get("sm.ind", {}), { [c.dataset.ind]: c.checked });
+        SM.store.set("sm.ind", this.ind);
+        this.render();
+      }));
+      this.tb.addEventListener("click", (e) => {
+        const m = e.target.closest("[data-mode]");
+        if (m) { this.setMode(m.dataset.mode); return; }
+        const b = e.target.closest("[data-act]");
+        if (!b) return;
+        const a = b.dataset.act;
+        if (a === "undo") this.undo();
+        else if (a === "clear") this.clearDrawings(b);
+        else if (a === "log") {
+          this.logScale = !this.logScale;
+          SM.store.set("sm.logscale", this.logScale);
+          b.setAttribute("aria-pressed", String(this.logScale));
+          this.render();
+        } else if (a === "replay") { if (this.replay) this.stopReplay(); else this.startReplay(); }
+        else if (a === "fs") this.toggleFullscreen();
+      });
+      this.rb.addEventListener("click", (e) => {
+        const b = e.target.closest("[data-rb]");
+        if (!b || !this.replay) return;
+        const a = b.dataset.rb;
+        if (a === "back") this.stepReplay(-1);
+        else if (a === "fwd") this.stepReplay(1);
+        else if (a === "play") this.playReplay();
+        else if (a === "exit") this.stopReplay();
+      });
+      this.range = this.rb.querySelector(".rb-range");
+      this.range.addEventListener("input", () => { this.pauseReplay(); this.seekReplay(+this.range.value); });
+      // document-level listeners detach themselves once this chart has been replaced
+      const onFs = () => {
+        if (!this.box.isConnected) { document.removeEventListener("fullscreenchange", onFs); return; }
+        this.fs = document.fullscreenElement === this.wrap;
+        const b = this.tb.querySelector('[data-act="fs"]');
+        if (b) {
+          const label = this.fs ? "Exit full screen" : "Full screen";
+          b.innerHTML = SM.icon(this.fs ? "shrink" : "expand");
+          b.setAttribute("aria-label", label); b.title = label;
+        }
+        this.userZoomed = false;
+        this.resize();
+      };
+      document.addEventListener("fullscreenchange", onFs);
+      const onDoc = (e) => {
+        if (!this.box.isConnected) { document.removeEventListener("click", onDoc); return; }
+        const menu = this.tb.querySelector(".ct-menu");
+        if (menu.open && !menu.contains(e.target)) menu.open = false;
+      };
+      document.addEventListener("click", onDoc);
+    }
+    setMode(m) {
+      this.mode = m;
+      this.pending = null;
+      this.measure = null;
+      this.tb.querySelectorAll("[data-mode]").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.mode === m)));
+      this.box.classList.toggle("drawing", m !== "pan");
+      this.setHint();
+      this.drawLive();
+    }
+    setHint(text) {
+      if (!this.hint) return;
+      const H = {
+        pan: "",
+        hline: "Click the chart to place a horizontal line.",
+        trend: this.pending ? "Click the second point." : "Click the first point of the trend line.",
+        measure: this.pending ? "Click the end point." : this.measure ? "Click again to start a new measurement." : "Click the start point to measure.",
+      };
+      this.hint.textContent = text || (H[this.mode] + (this.mode !== "pan" ? " Esc cancels." : ""));
+    }
+    drawClick(e) {
+      const pt = this.pointAt(e);
+      if (!pt) return;
+      if (this.mode === "hline") {
+        this.addDrawing({ type: "h", p: r2(pt.p) });
+        this.setMode("pan");
+      } else if (this.mode === "trend") {
+        if (!this.pending) { this.pending = pt; this.setHint(); return; }
+        if (pt.k !== this.pending.k) {
+          const [a, b] = pt.k > this.pending.k ? [this.pending, pt] : [pt, this.pending];
+          this.addDrawing({ type: "t", t1: a.t, p1: r2(a.p), t2: b.t, p2: r2(b.p) });
+        }
+        this.setMode("pan");
+      } else if (this.mode === "measure") {
+        if (this.pending) { this.measure = { a: this.pending, b: pt }; this.pending = null; }
+        else { this.pending = pt; this.measure = null; }
+        this.setHint();
+        this.drawLive();
+      }
+    }
+    saveDrawings() { if (this.drawKey) SM.store.set(this.drawKey, this.drawings.slice(-60)); }
+    addDrawing(dw) { this.drawings.push(dw); this.saveDrawings(); this.render(); }
+    undo() {
+      if (this.pending || this.measure) { this.setMode(this.mode); return; }
+      if (!this.drawings.length) { this.setHint("Nothing to undo."); return; }
+      this.drawings.pop();
+      this.saveDrawings();
+      this.render();
+    }
+    clearDrawings(btn) {
+      if (!this.drawings.length) { this.setHint("No drawings on this chart."); return; }
+      if (!btn.classList.contains("confirm")) {
+        btn.classList.add("confirm");
+        this.setHint(`Click the bin again to remove ${this.drawings.length} drawing${this.drawings.length === 1 ? "" : "s"} from ${this.data.symbol} ${this.data.timeframe}.`);
+        clearTimeout(this._clearT);
+        this._clearT = setTimeout(() => { btn.classList.remove("confirm"); this.setHint(); }, 3500);
+        return;
+      }
+      btn.classList.remove("confirm");
+      this.drawings = [];
+      this.saveDrawings();
+      this.setHint("Drawings cleared.");
+      this.render();
+    }
+    series(k) {
+      this._ser = this._ser || {};
+      if (!this._ser[k]) {
+        const b = this.data.bars;
+        this._ser[k] = k === "ema20" ? ema(b, 20) : k === "ema50" ? ema(b, 50) : k === "ema200" ? ema(b, 200)
+          : k === "sma50" ? sma(b, 50) : k === "bb" ? bollinger(b) : vwap(b);
+      }
+      return this._ser[k];
+    }
+    activeIndicators() { return INDICATORS.filter((d) => this.ind[d.k] && !(d.intraday && !this.intraday)); }
+    tIndex() {
+      if (!this._tidx) this._tidx = new Map(this.data.bars.map((b, i) => [b.t, i]));
+      return this._tidx;
+    }
+    drawLive() {
+      const g = this.svg.querySelector(".live");
+      if (!g || !this.L) return;
+      const L = this.L, pt = this.lastPt;
+      const inView = (q) => q && q.k >= this.start && q.k <= this.end;
+      let out = "";
+      if (this.mode === "trend" && inView(this.pending) && pt) {
+        out = `<line x1="${L.x(this.pending.k)}" y1="${L.y(this.pending.p)}" x2="${L.x(pt.k)}" y2="${L.y(pt.p)}" stroke="var(--info)" stroke-width="1.5" stroke-dasharray="4 3"/>
+          <circle cx="${L.x(this.pending.k)}" cy="${L.y(this.pending.p)}" r="3.5" fill="var(--panel)" stroke="var(--info)" stroke-width="1.5"/>`;
+      } else if (this.mode === "hline" && pt) {
+        out = `<line x1="${L.padL}" x2="${L.padL + L.plotW}" y1="${L.y(pt.p)}" y2="${L.y(pt.p)}" stroke="var(--info)" stroke-dasharray="4 3"/>`;
+      } else if (this.mode === "measure") {
+        const a = this.measure ? this.measure.a : this.pending, b = this.measure ? this.measure.b : pt;
+        if (inView(a) && b) out = this.measureSVG(a, b);
+      }
+      g.innerHTML = out;
+    }
+    measureSVG(a, b) {
+      const L = this.L;
+      const dp = b.p - a.p, pct = a.p ? (dp / a.p) * 100 : 0, nb = Math.abs(b.k - a.k);
+      const up = dp >= 0, col = up ? "var(--up)" : "var(--down)";
+      const xa = L.x(a.k), xb = L.x(b.k), ya = L.y(a.p), yb = L.y(b.p);
+      const atr = this.data.summary && this.data.summary.atr;
+      const txt = `${SM.signed(dp, 2)} (${SM.signed(pct, 2)}%) · ${nb} bar${nb === 1 ? "" : "s"}${atr ? ` · ${SM.fmt(Math.abs(dp) / atr, 1)} ATR` : ""}`;
+      const tw = txt.length * 6.3 + 14;
+      let tx = xb + 8;
+      if (tx + tw > L.padL + L.plotW) tx = xb - 8 - tw;
+      tx = Math.max(L.padL + 2, tx);
+      const ty = Math.max(L.padT + 2, Math.min(L.padT + L.priceH - 24, yb - 11));
+      return `<rect x="${Math.min(xa, xb)}" y="${Math.min(ya, yb)}" width="${Math.max(1, Math.abs(xb - xa))}" height="${Math.max(1, Math.abs(yb - ya))}" fill="var(--${up ? "up" : "down"}-soft)" fill-opacity="0.7" stroke="${col}" stroke-dasharray="3 3"/>
+        <line x1="${xa}" y1="${ya}" x2="${xb}" y2="${yb}" stroke="${col}" stroke-width="1.4"/>
+        <rect x="${tx}" y="${ty}" width="${tw}" height="22" rx="4" fill="var(--panel)" stroke="${col}"/>
+        <text x="${tx + 7}" y="${ty + 11.5}" dominant-baseline="middle" font-size="11" font-weight="700" fill="${col}">${esc(txt)}</text>`;
+    }
+
+    // -------------------------------------------------------------- bar replay
+    startReplay() {
+      const n = this.data.bars.length;
+      if (n < 40) { this.setHint("Not enough bars to replay."); return; }
+      const from = this.cursor != null && this.cursor < n - 1 ? this.cursor : n - 61;
+      this.replay = { end: 0, timer: null };
+      this.rb.hidden = false;
+      this.tb.querySelector('[data-act="replay"]').setAttribute("aria-pressed", "true");
+      this.box.classList.add("replaying");
+      this.cursor = null;
+      this.setHint("Replay shows pivots, zones and BOS/CHoCH only once they were confirmed. Volume profile and trade levels are hidden.");
+      this.seekReplay(from);
+      if (this.fs) this.resize();
+    }
+    seekReplay(k) {
+      const n = this.data.bars.length;
+      this.replay.end = Math.max(20, Math.min(n - 1, k));
+      const span = this.userZoomed ? this.end - this.start : this.fitVisible() - 1;
+      this.end = this.replay.end;
+      this.start = Math.max(0, this.end - span);
+      this.render();
+      const b = this.data.bars[this.replay.end];
+      this.range.value = String(this.replay.end);
+      this.rb.querySelector(".rb-label").textContent = `${SM.date(b.t)}${this.intraday ? " " + SM.time(b.t) : ""} · bar ${this.replay.end + 1} of ${n}${this.replay.end === n - 1 ? " (latest)" : ""}`;
+    }
+    stepReplay(d) { this.pauseReplay(); this.seekReplay(this.replay.end + d); }
+    playReplay() {
+      if (this.replay.timer) { this.pauseReplay(); return; }
+      if (this.replay.end >= this.data.bars.length - 1) { this.setHint("Already at the latest bar. Step back or drag the slider first."); return; }
+      this.replay.timer = setInterval(() => {
+        if (!this.box.isConnected || !this.replay || this.replay.end >= this.data.bars.length - 1) { this.pauseReplay(); return; }
+        this.seekReplay(this.replay.end + 1);
+      }, 450);
+      this.setPlayButton(true);
+    }
+    pauseReplay() {
+      if (this.replay && this.replay.timer) { clearInterval(this.replay.timer); this.replay.timer = null; }
+      this.setPlayButton(false);
+    }
+    setPlayButton(playing) {
+      const b = this.rb && this.rb.querySelector('[data-rb="play"]');
+      if (!b) return;
+      b.innerHTML = SM.icon(playing ? "pause" : "play");
+      b.setAttribute("aria-label", playing ? "Pause" : "Play"); b.title = playing ? "Pause" : "Play";
+    }
+    stopReplay() {
+      this.pauseReplay();
+      this.replay = null;
+      this.rb.hidden = true;
+      this.tb.querySelector('[data-act="replay"]').setAttribute("aria-pressed", "false");
+      this.box.classList.remove("replaying");
+      this.setHint();
+      this.userZoomed = false;
+      this.resize();
+    }
+    toggleFullscreen() {
+      if (document.fullscreenElement) { document.exitFullscreen().catch(() => {}); return; }
+      const req = this.wrap.requestFullscreen && this.wrap.requestFullscreen();
+      if (req && req.catch) req.catch(() => this.setHint("Full screen is not available here."));
+    }
+
+    // -------------------------------------------------------------- render
     render() {
       const d = this.data, o = this.o, bars = d.bars;
       if (!bars.length) { this.svg.innerHTML = ""; return; }
-      const W = Math.max(280, this.el.clientWidth || 800), H = this.fitHeight(W);
+      const N = this.n(), R = N - 1, replaying = !!this.replay;
+      const W = Math.max(280, this.width()), H = this.fitHeight(W);
+      this.box.classList.toggle("narrow", W < 640); // readout moves above the plot instead of over the candles
       const maxPrice = Math.max(...d.bars.slice(this.start, this.end + 1).map((b) => b.h));
       const padL = 4, padR = maxPrice >= 10000 ? 92 : maxPrice >= 1000 ? 84 : 74, padT = 30, padB = 22;
       const volH = o.volume ? Math.round((H - padT - padB) * 0.15) : 0;
@@ -401,25 +756,41 @@
       const step = plotW / count;
       const vis = bars.slice(s, e + 1);
       let lo = Math.min(...vis.map((b) => b.l)), hi = Math.max(...vis.map((b) => b.h));
-      const lv = this.levelList();
+      const lv = replaying ? [] : this.levelList();
       if (o.levels) lv.forEach((l) => { if (SM.isNum(l.p) && l.fit) { lo = Math.min(lo, l.p); hi = Math.max(hi, l.p); } });
-      const pad = (hi - lo) * 0.06 || 1; lo -= pad; hi += pad;
+      const logS = this.logScale && lo > 0;
+      let y, yInv;
+      if (logS) {
+        const r = Math.log(hi / lo) * 0.06 || 0.01;
+        lo *= Math.exp(-r); hi *= Math.exp(r);
+        const llo = Math.log(lo), lhi = Math.log(hi);
+        y = (p) => padT + ((lhi - Math.log(Math.max(p, 1e-9))) / (lhi - llo)) * priceH;
+        yInv = (py) => Math.exp(lhi - ((py - padT) / priceH) * (lhi - llo));
+      } else {
+        const pad = (hi - lo) * 0.06 || 1; lo -= pad; hi += pad;
+        y = (p) => padT + ((hi - p) / (hi - lo)) * priceH;
+        yInv = (py) => hi - ((py - padT) / priceH) * (hi - lo);
+      }
       const x = (k) => padL + (k - s + 0.5) * step;
-      const y = (p) => padT + ((hi - p) / (hi - lo)) * priceH;
-      this.L = { W, H, padL, padR, padT, padB, step, x, y, priceH, volH, plotW, lo, hi };
+      this.L = { W, H, padL, padR, padT, padB, step, x, y, yInv, priceH, volH, plotW, lo, hi };
       const off = d.offset || 0;
       const big = hi > 2000;
       const parts = [];
       const tags = []; // right-axis price tags, de-overlapped before drawing
       parts.push(`<defs><clipPath id="clip-${this.uid()}"><rect x="${padL}" y="${padT}" width="${plotW}" height="${priceH}"/></clipPath></defs>`);
       const clip = `clip-path="url(#clip-${this.uid()})"`;
-      // grid & price axis
+      // grid & price axis (ticks closer than 16 px are skipped, which matters on the log scale)
+      let lastTy = -1e9;
       for (const t of ticks(lo, hi, 6)) {
-        parts.push(`<line x1="${padL}" x2="${padL + plotW}" y1="${y(t)}" y2="${y(t)}" stroke="var(--grid)"/>
-          <text x="${W - padR + 6}" y="${y(t)}" dominant-baseline="middle" fill="var(--axis)" font-size="10.5">${pfmt(t, big)}</text>`);
+        const ty = y(t);
+        if (Math.abs(ty - lastTy) < 16) continue;
+        lastTy = ty;
+        parts.push(`<line x1="${padL}" x2="${padL + plotW}" y1="${ty}" y2="${ty}" stroke="var(--grid)"/>
+          <text x="${W - padR + 6}" y="${ty}" dominant-baseline="middle" fill="var(--axis)" font-size="10.5">${pfmt(t, big)}</text>`);
       }
+      if (logS) parts.push(`<text x="${W - padR + 6}" y="${padT - 12}" fill="var(--axis)" font-size="10" font-weight="700">LOG</text>`);
       // time axis
-      const intraday = !["1D", "1W", "1M"].includes(d.timeframe);
+      const intraday = this.intraday;
       let lastLab = null, lastX = -1e9;
       for (let k = s; k <= e; k++) {
         const t = SM.parseT(bars[k].t);
@@ -434,23 +805,26 @@
           lastLab = key;
         }
       }
-      // zones
+      // zones: during replay a zone appears on its creation bar and counts as invalidated only from its invalidation bar
       if (o.zones) {
         (d.zones || []).forEach((z) => {
-          const a = Math.max(s, z.origin_bar - off), b = Math.min(e, z.invalidation_bar != null ? z.invalidation_bar - off : bars.length - 1);
+          if (z.creation_bar - off > R) return;
+          const invK = z.invalidation_bar != null ? z.invalidation_bar - off : null;
+          const inval = invK != null && invK <= R;
+          const a = Math.max(s, z.origin_bar - off), b = Math.min(e, inval ? invK : R);
           if (b < s || a > e || a > b) return;
           const top = Math.max(z.proximal, z.distal), bot = Math.min(z.proximal, z.distal);
           const k = z.type === "DEMAND" ? "demand" : "supply";
           const x0 = x(a) - step / 2, w = x(b) - x(a) + step;
-          const inval = z.status === "INVALIDATED";
+          const status = replaying ? (inval ? "INVALIDATED" : "ACTIVE at replay bar") : z.status;
           parts.push(`<g ${clip}><rect x="${x0}" y="${y(top)}" width="${w}" height="${Math.max(2, y(bot) - y(top))}" fill="var(--${k}-fill)" stroke="var(--${k})" stroke-opacity="${inval ? 0.5 : 0.9}" ${inval ? 'stroke-dasharray="4 3" fill-opacity="0.45"' : ""}>
-            <title>${esc(z.type)} ${esc(z.pattern)} ${SM.fmt(z.proximal)}–${SM.fmt(z.distal)} · ${esc(z.status)} · created ${SM.date(z.creation_time)}</title></rect>
-            ${w > 90 && !inval ? `<text x="${x0 + w - 6}" y="${y(top) + 12}" text-anchor="end" font-size="10.5" font-weight="700" fill="var(--${k})">${esc(SM.title(z.type))} (${esc(z.pattern)})${inval ? " · invalid" : ""}</text>` : ""}</g>`);
+            <title>${esc(z.type)} ${esc(z.pattern)} ${SM.fmt(z.proximal)}–${SM.fmt(z.distal)} · ${esc(status)} · created ${SM.date(z.creation_time)}</title></rect>
+            ${w > 90 && !inval ? `<text x="${x0 + w - 6}" y="${y(top) + 12}" text-anchor="end" font-size="10.5" font-weight="700" fill="var(--${k})">${esc(SM.title(z.type))} (${esc(z.pattern)})</text>` : ""}</g>`);
         });
       }
-      // volume profile overlay
+      // volume profile overlay (computed on the whole window, so it is hidden during replay)
       const vp = d.profile;
-      if (o.profile && vp) {
+      if (o.profile && vp && !replaying) {
         const max = Math.max(...vp.volumes);
         const maxW = plotW * 0.2;
         const g = [];
@@ -483,6 +857,18 @@
         }
         parts.push(g.join(""));
       }
+      // Bollinger band fill sits under the candles; indicator lines are drawn over them
+      const inds = this.activeIndicators();
+      const line = (arr, def, extra = "") => {
+        const pts = [];
+        for (let k = s; k <= e; k++) if (arr[k] != null) pts.push(`${x(k).toFixed(1)},${y(arr[k]).toFixed(1)}`);
+        return pts.length > 1 ? `<polyline points="${pts.join(" ")}" fill="none" stroke="${def.c}" stroke-width="1.3" ${def.dash ? `stroke-dasharray="${def.dash}"` : ""} ${extra}/>` : "";
+      };
+      if (inds.some((def) => def.k === "bb")) {
+        const b = this.series("bb"), upPts = [], dnPts = [];
+        for (let k = s; k <= e; k++) if (b.up[k] != null) { upPts.push(`${x(k).toFixed(1)},${y(b.up[k]).toFixed(1)}`); dnPts.unshift(`${x(k).toFixed(1)},${y(b.dn[k]).toFixed(1)}`); }
+        if (upPts.length > 1) parts.push(`<g ${clip}><polygon points="${upPts.concat(dnPts).join(" ")}" fill="var(--accent-soft)" fill-opacity="0.35"/></g>`);
+      }
       // candles
       const bw = Math.max(1, Math.min(13, step * 0.64));
       const cg = [];
@@ -495,12 +881,16 @@
         cg.push(`<rect x="${x(k) - bw / 2}" y="${top}" width="${bw}" height="${Math.max(1, bot - top)}" fill="${hollow ? "var(--panel)" : col}" stroke="${col}" stroke-width="${hollow ? 1.2 : 0.6}"/>`);
       }
       parts.push(`<g ${clip}>${cg.join("")}</g>`);
-      // zigzag
-      const piv = (d.pivots || []).map((p, i) => ({ ...p, i, k: p.bar - off })).filter((p) => p.k >= 0);
+      inds.forEach((def) => {
+        if (def.k === "bb") { const b = this.series("bb"); parts.push(`<g ${clip}>${line(b.up, def)}${line(b.dn, def)}${line(b.mid, def, 'stroke-opacity="0.7"')}</g>`); }
+        else parts.push(`<g ${clip}>${line(this.series(def.k), def)}</g>`);
+      });
+      // zigzag: during replay only pivots confirmed by the replay bar
+      const piv = (d.pivots || []).map((p, i) => ({ ...p, i, k: p.bar - off })).filter((p) => p.k >= 0 && p.confirmation_bar - off <= R);
       if (o.zigzag && piv.length) {
         const pts = piv.map((p) => `${x(p.k).toFixed(1)},${y(p.price).toFixed(1)}`);
         parts.push(`<g ${clip}><polyline points="${pts.join(" ")}" fill="none" stroke="var(--accent-2)" stroke-width="1.5" stroke-opacity="0.9"/>`);
-        if (d.candidate) {
+        if (d.candidate && !replaying) {
           const last = piv[piv.length - 1];
           parts.push(`<line x1="${x(last.k)}" y1="${y(last.price)}" x2="${x(d.candidate.bar - off)}" y2="${y(d.candidate.price)}" stroke="var(--accent-2)" stroke-width="1.3" stroke-dasharray="4 4"/>
             <circle cx="${x(d.candidate.bar - off)}" cy="${y(d.candidate.price)}" r="4" fill="none" stroke="var(--warn)" stroke-width="1.5"><title>Unconfirmed swing ${esc(d.candidate.type)} ${SM.fmt(d.candidate.price)} -- not used by the strategy</title></circle>`);
@@ -528,14 +918,14 @@
       if (o.events) {
         (d.events || []).forEach((ev) => {
           const a = Math.max(s, ev.level_bar - off), b = ev.bar - off;
-          if (b < s || a > e) return;
+          if (b > R || b < s || a > e) return;
           const col = ev.direction === "BULLISH" ? "var(--up)" : "var(--down)";
           parts.push(`<g ${clip}><line x1="${x(a)}" x2="${x(Math.min(b, e))}" y1="${y(ev.level)}" y2="${y(ev.level)}" stroke="${col}" stroke-dasharray="5 3" stroke-width="1.2"/>
             <text x="${(x(a) + x(Math.min(b, e))) / 2}" y="${y(ev.level) + (ev.direction === "BULLISH" ? -5 : 13)}" text-anchor="middle" font-size="10" font-weight="700" fill="${col}">${ev.type === "CHOCH" ? "CHoCH" : "BOS"}</text></g>`);
         });
       }
-      // trade / plan levels
-      if (o.levels) {
+      // trade / plan levels (current state only, so hidden during replay)
+      if (o.levels && !replaying) {
         lv.forEach((l) => {
           if (!SM.isNum(l.p) || l.p < lo || l.p > hi) return;
           parts.push(`<line x1="${padL}" x2="${padL + plotW}" y1="${y(l.p)}" y2="${y(l.p)}" stroke="${l.c}" stroke-width="${l.w || 1.3}" ${l.dash ? `stroke-dasharray="${l.dash}"` : ""}/>`);
@@ -569,8 +959,27 @@
           parts.push(`<path d="${shape}" fill="${entry ? col : "none"}" stroke="${col}" stroke-width="${entry ? 1 : 2}"><title>${esc(m.kind === "entry" ? "Entry" : "Exit")} ${esc(m.direction)} ${SM.fmt(m.price)}${m.reason ? " · " + esc(m.reason) : ""} (${esc(m.trade_id)})</title></path>`);
         });
       }
-      // last price
-      const last = bars[bars.length - 1];
+      // user drawings (kept per symbol and timeframe in this browser, anchored to bar times)
+      if (this.drawings.length) {
+        const idx = this.tIndex();
+        this.drawings.forEach((dw) => {
+          if (dw.type === "h") {
+            if (dw.p < lo || dw.p > hi) return;
+            parts.push(`<line x1="${padL}" x2="${padL + plotW}" y1="${y(dw.p)}" y2="${y(dw.p)}" stroke="var(--info)" stroke-width="1.3"/>`);
+            tags.push({ y: y(dw.p), text: pfmt(dw.p, big), bg: "var(--info)", ink: "var(--bg)", solid: false });
+          } else if (dw.type === "t") {
+            const k1 = idx.get(dw.t1), k2 = idx.get(dw.t2);
+            if (k1 == null || k2 == null || k2 <= k1) return;
+            const x1 = x(k1), y1 = y(dw.p1), x2 = x(k2), y2 = y(dw.p2);
+            const xe = x(e), ye = y2 + ((y2 - y1) / (x2 - x1)) * (xe - x2); // extend to the right edge on screen
+            parts.push(`<g ${clip}><line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="var(--info)" stroke-width="1.6"/>
+              ${xe > x2 ? `<line x1="${x2}" y1="${y2}" x2="${xe}" y2="${ye}" stroke="var(--info)" stroke-width="1.2" stroke-dasharray="4 4" stroke-opacity="0.8"/>` : ""}
+              <circle cx="${x1}" cy="${y1}" r="3" fill="var(--panel)" stroke="var(--info)" stroke-width="1.4"/><circle cx="${x2}" cy="${y2}" r="3" fill="var(--panel)" stroke="var(--info)" stroke-width="1.4"/></g>`);
+          }
+        });
+      }
+      // last price (the replay bar's close while replaying)
+      const last = bars[R];
       if (last.c >= lo && last.c <= hi) {
         const col = last.c >= last.o ? "var(--up)" : "var(--down)";
         parts.push(`<line x1="${padL}" x2="${padL + plotW}" y1="${y(last.c)}" y2="${y(last.c)}" stroke="${col}" stroke-dasharray="1 3"/>`);
@@ -588,11 +997,12 @@
         if (Math.abs(t.y - t.y0) > 2) parts.push(`<line x1="${W - padR - 6}" x2="${W - padR + 1}" y1="${t.y0}" y2="${t.y}" stroke="${t.bg}" stroke-width="1"/>`);
         parts.push(this.tag(W - padR, t.y, t.text, t.bg, t.ink, t.solid));
       });
-      parts.push(`<g class="xhair"></g>`);
+      parts.push(`<g class="live"></g><g class="xhair"></g>`);
       this.svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
       this.svg.setAttribute("height", H);
       this.svg.innerHTML = parts.join("");
       this.drawCursor();
+      this.drawLive();
     }
     uid() { if (!this._uid) this._uid = Math.random().toString(36).slice(2, 8); return this._uid; }
     tag(x0, yy, text, bg, ink, solid) {
@@ -618,16 +1028,22 @@
     drawCursor() {
       const L = this.L; if (!L) return;
       const g = this.svg.querySelector(".xhair");
-      const k = this.cursor != null ? this.cursor : this.data.bars.length - 1;
+      const R = this.n() - 1;
+      const k = this.cursor != null ? Math.min(this.cursor, R) : R;
       const b = this.data.bars[k];
       const prev = this.data.bars[k - 1];
       const chg = prev ? b.c - prev.c : 0;
       const pc = prev ? (chg / prev.c) * 100 : 0;
       const big = L.hi > 2000;
-      this.readout.innerHTML = `<span>${SM.date(b.t)}${["1D", "1W", "1M"].includes(this.data.timeframe) ? "" : " " + SM.time(b.t)}</span>
+      const ind = this.activeIndicators().map((def) => {
+        const ser = this.series(def.k);
+        const v = def.k === "bb" ? (ser.up[k] != null ? `${pfmt(ser.dn[k], false)}–${pfmt(ser.up[k], false)}` : null) : ser[k] != null ? pfmt(ser[k], false) : null;
+        return v == null ? "" : `<span class="ind-read"><i style="border-top-color:${def.c}"></i>${esc(def.label)} <b>${v}</b></span>`;
+      }).join("");
+      this.readout.innerHTML = `${this.replay ? '<span class="rb-flag">Replay</span>' : ""}<span>${SM.date(b.t)}${this.intraday ? " " + SM.time(b.t) : ""}</span>
         <span>O <b>${pfmt(b.o, false)}</b></span><span>H <b>${pfmt(b.h, false)}</b></span><span>L <b>${pfmt(b.l, false)}</b></span>
         <span>C <b>${pfmt(b.c, false)}</b></span><span class="${SM.dir(chg)}">${SM.signed(chg, 2)} (${SM.signed(pc, 2)}%)</span>
-        <span>Vol <b>${SM.compact(b.v)}</b></span>`;
+        <span>Vol <b>${SM.compact(b.v)}</b></span>${ind}`;
       if (!g) return;
       if (this.cursor == null) { g.innerHTML = ""; return; }
       const cx = L.x(k);

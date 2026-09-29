@@ -25,13 +25,16 @@
     let chart = null;
     const chartEl = el.querySelector("#cc-chart");
     async function load() {
+      // hold the current height while loading so a timeframe switch does not jump the page, then let the chart size itself
+      chartEl.style.minHeight = `${chartEl.offsetHeight || opts.height || 460}px`;
       chartEl.innerHTML = ui.loading();
       try {
         const d = await SM.api.get("/api/chart", { symbol: sym(), tf: st.tf, profile: st.profile });
         el.querySelector("#cc-title").textContent = `${d.symbol} · ${d.timeframe}`;
         const s = d.summary;
         el.querySelector("#cc-sub").innerHTML = `${esc(d.name)} · <b class="num">${SM.fmt(s.last.c)}</b> <span class="${SM.dir(s.change)}">${SM.signed(s.change)} (${SM.signed(s.change_pct)}%)</span> · ${ui.trendBadge(s.trend)} <span class="muted">HTF ${esc(d.htf)}</span> ${ui.trendBadge(s.htf_trend)}`;
-        chart = new SM.charts.CandleChart(chartEl, d, Object.assign({ height: opts.height || 460, visible: opts.visible || 150, onPivot: opts.onPivot }, st.layers));
+        chart = new SM.charts.CandleChart(chartEl, d, Object.assign({ height: opts.height || 460, visible: opts.visible || 150, onPivot: opts.onPivot, tools: !opts.compact }, st.layers));
+        chartEl.style.minHeight = "";
         if (opts.onData) opts.onData(d);
       } catch (err) { chartEl.innerHTML = ui.error(err); if (opts.onData) opts.onData(null, err); }
     }
@@ -41,6 +44,22 @@
     el.querySelectorAll("[data-layer]").forEach((c) => c.addEventListener("change", () => { st.layers[c.dataset.layer] = c.checked; if (chart) chart.set({ [c.dataset.layer]: c.checked }); }));
     load();
     return { reload: load };
+  };
+
+  // Multi-timeframe layout: Weekly context, Daily structure and 1H entry side by side (stacked below 1200 px)
+  const MTF_LAYOUT = [["1W", "Macro context"], ["1D", "Swing structure"], ["1H", "Entry refinement"]];
+  SM.parts.multiChart = function (el) {
+    const symbol = SM.state.symbol;
+    el.innerHTML = `<div class="mtf-charts">${MTF_LAYOUT.map((r, i) => `<div id="mc-${i}"></div>`).join("")}</div>`;
+    MTF_LAYOUT.forEach(([tf, role], i) => {
+      const box = el.querySelector(`#mc-${i}`);
+      box.innerHTML = ui.card({ title: `${tf} · ${role}`, actions: '<span class="mc-trend"></span>',
+        body: `<div class="mc-chart" style="min-height:300px">${ui.loading()}</div>` });
+      SM.api.get("/api/chart", { symbol, tf, profile: "FIXED" }).then((d) => {
+        box.querySelector(".mc-trend").innerHTML = ui.trendBadge(d.summary.trend);
+        new SM.charts.CandleChart(box.querySelector(".mc-chart"), d, { height: 340, visible: tf === "1W" ? 70 : 90, profile: false });
+      }).catch((err) => { box.querySelector(".mc-chart").innerHTML = ui.error(err); });
+    });
   };
 
   // Section 4 hierarchy: Weekly macro -> Daily structure -> 4H setup -> 1H entry refinement
@@ -79,10 +98,19 @@
   SM.views.structure = {
     title: "Chart & Structure", icon: "trend", group: "Analysis",
     async render(el) {
+      const layout = SM.store.get("sm.structure.layout", "single");
       el.innerHTML = `<div class="view-head"><div><h1>Market structure</h1>
-        <p>Pivots are drawn where the swing printed, and a ◇ marks the bar on which the reversal confirmed them. The engine can only use a pivot from its confirmation bar onward.</p></div></div>
-        <div class="grid g-main"><div id="st-chart"></div><div class="grid" id="st-side"></div></div>
-        <div class="grid g-2"><div id="st-pivots"></div><div id="st-events"></div></div>`;
+        <p>Pivots are drawn where the swing printed, and a ◇ marks the bar on which the reversal confirmed them. The engine can only use a pivot from its confirmation bar onward.</p></div>
+        <div class="actions">${ui.seg("stl", [["single", "Single chart"], ["mtf", "Weekly · Daily · 1H"]], layout, true)}</div></div>
+        ${layout === "mtf" ? '<div id="st-multi"></div><div id="st-align"></div>'
+          : `<div class="grid g-main"><div id="st-chart"></div><div class="grid" id="st-side"></div></div>
+        <div class="grid g-2"><div id="st-pivots"></div><div id="st-events"></div></div>`}`;
+      ui.bindSeg(el, "stl", (v) => { SM.store.set("sm.structure.layout", v); SM.views.structure.render(el); });
+      if (layout === "mtf") {
+        SM.parts.multiChart(el.querySelector("#st-multi"));
+        SM.parts.mtfCard(el.querySelector("#st-align"), SM.state.symbol);
+        return;
+      }
       const side = el.querySelector("#st-side");
       const inspect = (p) => {
         const box = side.querySelector("#st-inspect");

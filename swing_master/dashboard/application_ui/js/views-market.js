@@ -13,6 +13,7 @@
       el.innerHTML = `
         <div class="view-head"><div><h1>Trading command centre</h1>
           <p>Structure first, then zones, value, positioning, derivatives and confirmation. Every number below is computed chronologically from the ${SM.state.meta.demo ? "demo" : "loaded"} dataset.</p></div></div>
+        ${onboarding()}
         <div class="kpi-row">
           ${ui.kpi({ label: "Account (Paper)", value: SM.inr(a.equity), sub: `Capital ${SM.inr(a.capital)}`, icon: "bank", cls: "compact" })}
           ${ui.kpi({ label: "Open Risk" + ui.tip("Money lost if every open position hit its current stop. Zero once stops sit at or beyond entry."), value: `${SM.inr(a.open_risk)} <small class="muted">(${SM.fmt(a.open_risk_pct, 2)}%)</small>`, sub: `Cap ${SM.fmt(a.max_risk_pct, 1)}% of equity`, icon: "shield", cls: "compact" })}
@@ -33,7 +34,8 @@
           <div id="ov-pos"></div>
           <div id="ov-signals"></div>
         </div>
-        <div id="ov-trades"></div>`;
+        <div id="ov-trades"></div>
+        <div id="ov-watch"></div>`;
       SM.parts.chartCard(el.querySelector("#ov-chart"), { height: 430, compact: true });
       SM.parts.planCards(el.querySelector("#ov-plan"), SM.state.symbol, true);
       renderSetups(el.querySelector("#ov-long"), ov.top_long, "LONG", ov);
@@ -41,8 +43,50 @@
       renderPositioning(el.querySelector("#ov-pos"), ov);
       renderSignals(el.querySelector("#ov-signals"), ov);
       renderTrades(el.querySelector("#ov-trades"), ov.active_trades);
+      renderWatchlist(el.querySelector("#ov-watch"));
+      const gs = el.querySelector("#gs-close");
+      if (gs) gs.addEventListener("click", () => { SM.store.set("sm.onboarding.dismissed", true); el.querySelector(".getting-started").remove(); });
     },
   };
+
+  function onboarding() {
+    if (SM.store.get("sm.onboarding.dismissed", false)) return "";
+    const m = SM.state.meta;
+    const steps = [
+      { done: !m.demo, title: "Connect market data", text: m.demo ? "Running on demo data. Add TradingMaster credentials to use real F&O data." : `Using ${m.source}.`, href: "#health" },
+      { done: false, title: "Review risk limits", text: `Risk ${SM.fmt(100 * (m.risk_per_trade || 0.01), 1)}% per trade, max ${m.max_positions || 5} positions.`, href: "#settings" },
+      { done: ["PAPER", "SEMI_AUTO"].includes(m.execution_mode), title: "Practise on paper", text: `Mode: ${SM.title(m.execution_mode)}. Confirm proposals in Active Trades.`, href: "#trades" },
+      { done: m.broker && m.broker.status === "LIVE", title: "Connect a broker", text: "Locked until backtest, walk-forward and paper results are validated.", href: "#settings" },
+    ];
+    return `<section class="getting-started card" aria-label="Get started">
+      <div class="gs-head"><div><b>Get started</b><span class="muted">From research to controlled execution</span></div>
+        <button class="iconbtn" type="button" id="gs-close" aria-label="Hide get started">${SM.icon("x")}</button></div>
+      <ol class="gs-steps">${steps.map((st, i) => `<li class="${st.done ? "done" : ""}"><a href="${st.href}"><span class="gs-n">${st.done ? "✓" : i + 1}</span>
+        <span><b>${esc(st.title)}</b><small>${esc(st.text)}</small></span></a></li>`).join("")}</ol></section>`;
+  }
+
+  async function renderWatchlist(el) {
+    const draw = async () => {
+      if (!document.body.contains(el)) return;
+      const wl = SM.watchlist.all();
+      let rows = [];
+      if (wl.length) {
+        try { rows = (await SM.api.get("/api/scanner")).rows.filter((r) => wl.includes(r.symbol)); } catch (e) { rows = []; }
+      }
+      el.innerHTML = ui.card({ title: `Watchlist <span class="badge b-accent">${wl.length}</span>`, sub: "saved in this browser", body: '<div id="ov-wl"></div>', flush: true });
+      ui.table(el.querySelector("#ov-wl"), { compact: true, rows, rowKey: (r) => r.symbol + r.direction, onRow: (r) => SM.openSymbol(r.symbol, "setup"),
+        empty: ui.empty("Your watchlist is empty", "Tap ☆ next to a symbol in the Scanner to follow it here."), columns: [
+          { key: "symbol", label: "Symbol", render: (r) => `${SM.watchlist.star(r.symbol)}<span class="sym">${esc(r.symbol)}</span>` },
+          { key: "price", label: "Price", num: true, render: (r) => SM.fmt(r.price) }, { key: "change_pct", label: "Chg", num: true, render: (r) => ui.chg(r.change_pct) },
+          { key: "structure", label: "Structure", render: (r) => ui.trendBadge(r.structure) }, { key: "setup_type", label: "Setup", sm: false },
+          { key: "direction", label: "Dir", render: (r) => ui.dirBadge(r.direction) },
+          { key: "confluence", label: "Confluence", num: true, render: (r) => ui.scoreChip(r.confluence, SM.state.meta.min_conf) },
+          { key: "status", label: "Status", render: (r) => ui.status(r.status) },
+        ] });
+    };
+    document.addEventListener("sm:watchlist", draw);
+    draw();
+  }
 
   function renderSetups(el, rows, dir, ov) {
     const id = "ov-t-" + dir;
@@ -112,7 +156,9 @@
       const f = d.funnel;
       const steps = [["universe", SM.state.meta.universe_info && SM.state.meta.universe_info.mode === "ALL" ? "NSE universe" : "F&amp;O universe"], ["htf_structure", "HTF structure"], ["valid_zones", "Valid zones"], ["volume_poc", "Volume / POC"],
         ["positioning", "Positioning"], ["candle", "Candle confirm"], ["rr", "R:R"], ["final", "Final candidates"]];
-      const filt = { status: "ALL", dir: "ALL", q: "" };
+      const filt = { status: "ALL", dir: "ALL", q: "", sector: "ALL", setup: "ALL", watch: false };
+      const sectors = [...new Set(d.rows.map((r) => r.sector).filter(Boolean))].sort();
+      const setups = [...new Set(d.rows.map((r) => r.setup_type).filter(Boolean))];
       el.innerHTML = `
         <div class="view-head"><div><h1>Setup scanner</h1><p>${esc(d.timeframe)} scan of ${esc(SM.state.meta.universe_name)}, as of ${SM.dateTime(d.as_of)}. Statuses come from the same decision engine the backtester uses.${["4H", "1H"].includes(d.timeframe) ? " Intraday scans are computed on demand." : ""}</p></div>
           <div class="actions"><span class="muted" style="font-size:12px">Timeframe</span>${ui.seg("sctf", SM.state.meta.scanner_timeframes, tf, true)}</div></div>
@@ -123,6 +169,9 @@
           <div class="toolbar">
             ${ui.seg("dir", [["ALL", "All"], ["LONG", "Long"], ["SHORT", "Short"]], "ALL", true)}
             ${["ALL", "READY", "ACTIVE", "WAIT", "WATCH", "REJECTED"].map((s) => `<button type="button" class="chip" data-st="${s}" aria-pressed="${s === "ALL"}">${s === "ALL" ? "All" : SM.title(s)} <span class="n">${s === "ALL" ? d.rows.length : d.counts[s] || 0}</span></button>`).join("")}
+            <select class="select" id="sc-sector" aria-label="Sector"><option value="ALL">All sectors</option>${sectors.map((x) => `<option>${esc(x)}</option>`).join("")}</select>
+            <select class="select" id="sc-setup" aria-label="Setup type"><option value="ALL">All setups</option>${setups.map((x) => `<option>${esc(x)}</option>`).join("")}</select>
+            <button type="button" class="chip" id="sc-watch" aria-pressed="false" title="Show only symbols on your watchlist">★ Watchlist</button>
             <input class="input" id="sc-q" type="search" placeholder="Filter symbol or sector" aria-label="Filter symbol or sector">
           </div>`, body: '<div id="sc-table"></div>', flush: true,
           note: "READY = every rule passed on the latest bar · WAIT = in a qualified zone, confirmation pending · WATCH = approaching a qualified zone · REJECTED = a hard rule failed (hover the reason)." })}`;
@@ -130,9 +179,16 @@
       const t = ui.table(tableEl, { rows: d.rows, rowKey: (r) => r.symbol + r.direction, onRow: (r) => SM.openSymbol(r.symbol, "setup"), columns: scannerColumns(), caption: "Scanner results" });
       const apply = () => {
         const q = filt.q.toLowerCase();
+        const wl = SM.watchlist.all();
         t.setRows(d.rows.filter((r) => (filt.status === "ALL" || r.status === filt.status) && (filt.dir === "ALL" || r.direction === filt.dir)
+          && (filt.sector === "ALL" || r.sector === filt.sector) && (filt.setup === "ALL" || r.setup_type === filt.setup)
+          && (!filt.watch || wl.includes(r.symbol))
           && (!q || r.symbol.toLowerCase().includes(q) || (r.sector || "").toLowerCase().includes(q))));
       };
+      el.querySelector("#sc-sector").addEventListener("change", (e) => { filt.sector = e.target.value; apply(); });
+      el.querySelector("#sc-setup").addEventListener("change", (e) => { filt.setup = e.target.value; apply(); });
+      el.querySelector("#sc-watch").addEventListener("click", (e) => { filt.watch = !filt.watch; e.currentTarget.setAttribute("aria-pressed", String(filt.watch)); apply(); });
+      document.addEventListener("sm:watchlist", () => { if (filt.watch && document.body.contains(tableEl)) apply(); });
       ui.bindSeg(el, "dir", (v) => { filt.dir = v; apply(); });
       ui.bindSeg(el, "sctf", (v) => { SM.state.scanTf = v; SM.render(); });
       el.querySelectorAll("[data-st]").forEach((b) => b.addEventListener("click", () => {
@@ -146,11 +202,12 @@
   function scannerColumns() {
     const minC = SM.state.meta.min_conf, minZ = SM.state.meta.min_zone;
     return [
-      { key: "symbol", label: "Symbol", render: (r) => `<span class="sym" title="${esc(r.name)} · ${esc(r.sector)}">${esc(r.symbol)}</span>` },
+      { key: "symbol", label: "Symbol", sortValue: (r) => r.symbol, render: (r) => `${SM.watchlist.star(r.symbol)}<span class="sym" title="${esc(r.name)} · ${esc(r.sector)}">${esc(r.symbol)}</span>` },
       { key: "price", label: "Price", num: true, render: (r) => SM.fmt(r.price) },
       { key: "change_pct", label: "Chg", num: true, render: (r) => ui.chg(r.change_pct) },
       { key: "timeframe", label: "TF", sm: false },
       { key: "structure", label: "Structure", render: (r) => ui.trendBadge(r.structure) },
+      { key: "setup_type", label: "Setup", sm: false, render: (r) => r.setup_type ? `<span title="From confirmed structure: trend and the last BOS / CHoCH">${esc(r.setup_type)}</span>` : "—" },
       { key: "last_pivot", label: "Last pivot", sm: false, sortValue: (r) => r.last_pivot && r.last_pivot.time, render: (r) => r.last_pivot ? `<b>${esc(r.last_pivot.label)}</b> ${SM.fmt(r.last_pivot.price)} <span class="muted">${SM.dateShort(r.last_pivot.time)}</span>` : "—" },
       { key: "structure_event", label: "BOS/CHoCH", sm: false, render: (r) => r.structure_event ? `<span class="${r.structure_event.startsWith("Bullish") ? "up" : "down"}">${esc(r.structure_event.replace("CHOCH", "CHoCH"))}</span>` : "—" },
       { key: "zone", label: "Zone", render: (r) => r.zone ? `<span class="${r.zone_type === "DEMAND" ? "up" : "down"}">${esc(r.zone)}</span>` : "—" },
