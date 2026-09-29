@@ -1,6 +1,6 @@
 # Swing Master
 
-A swing-trading research platform for NSE equities and index derivatives. It covers market structure, demand and supply, volume profile, positioning, derivatives context, candlestick confirmation and risk. It includes a setup scanner, backtest and walk-forward labs, a trade journal, and paper execution behind a broker abstraction. The dashboard ships with **five interchangeable themes** and adapts automatically to **phones, tablets, laptops and large desktops**.
+A swing-trading research platform for NSE F&O stocks. It covers market structure, demand and supply, volume profile, positioning, derivatives context, candlestick confirmation and risk. It includes a setup scanner, backtest and walk-forward labs, a trade journal, and paper execution behind a broker abstraction. The dashboard ships with **five interchangeable themes** and adapts automatically to **phones, tablets, laptops and large desktops**.
 
 > **Demo data is fictional.** Without your own data files the platform runs on a deterministic synthetic market (random walk with regime drift). Everything built on it is labelled `DEMO · ILLUSTRATIVE DATA`. Synthetic data holds no exploitable edge by construction, so the demo backtest shows how the machinery works, not what the strategy is worth. Participant positioning is **never simulated**: it reads `UNAVAILABLE` until a genuine source is loaded.
 
@@ -12,18 +12,24 @@ Python 3.10+ and nothing else: the engine, server and UI use only the standard l
 python3 -m swing_master.main serve --open        # http://127.0.0.1:8765
 ```
 
-The first start analyses 51 instruments × 1,200 sessions in about 5–8 seconds, using all CPU cores where the OS supports `fork`. Raw and derived data are then written to SQLite in the background.
+On Windows, open a terminal in the project folder (for example `E:\Swing Master - Claude`) and type `python` instead of `python3`:
+
+```bat
+python -m swing_master.main serve --open
+```
+
+The demo's first start analyses 48 F&O stocks (plus NIFTY, BANKNIFTY and FINNIFTY for market context) × 1,200 sessions in about 5–10 seconds. It uses all CPU cores where the OS supports `fork`. Raw and derived data are then written to SQLite in the background.
 
 | Command | What it does |
 |---|---|
-| `python3 -m swing_master.main serve [--host H] [--port N] [--open]` | Dashboard + JSON API. Use `--host 0.0.0.0` to open it from a phone or tablet on the same network |
+| `python3 -m swing_master.main serve [--host H] [--port N] [--open]` | Dashboard + JSON API. To open it from a phone or tablet on the same network, set `SM_ACCESS_PASSWORD` and use `--host 0.0.0.0` |
 | `python3 -m swing_master.main scan` | Print the scanner table and funnel |
 | `python3 -m swing_master.main backtest` | Full-history KPIs |
 | `python3 -m swing_master.main walkforward` | Walk-forward folds, in-sample vs out-of-sample |
 | `python3 -m swing_master.main export-static dist/swing-master.html` | Self-contained, read-only HTML snapshot of the whole UI |
 | `python3 -m swing_master.main export-static public --split` | The same snapshot as `index.html` + per-screen JSON files, for hosting |
 | `python3 research/reference_strategy.py [--csv FILE]` | Phase-A standalone reference strategy |
-| `python3 -m unittest discover -s swing_master/tests -t .` | Test suite (80 tests, about 5 s) |
+| `python3 -m unittest discover -s swing_master/tests -t .` | Test suite (97 tests, about 10 s) |
 
 ## Works on every screen
 
