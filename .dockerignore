@@ -1,0 +1,11 @@
+.git
+.github
+.state
+dist
+public
+research
+docs
+deploy
+**/__pycache__
+**/*.pyc
+.env

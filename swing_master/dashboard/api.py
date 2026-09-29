@@ -683,6 +683,8 @@ def health_payload(p) -> Dict:
                                else "PaperBroker connected; live broker not configured"}),
         ("Last Candle", h["last_candle"]), ("Latency", h["latency"]), ("Data Gaps", h["data_gaps"]),
         ("Notifications", {"status": "ON" if p.telegram.enabled else "OFF", "detail": p.telegram.status()["detail"]}),
+        ("Daily Refresh", p.refresher.status() if getattr(p, "refresher", None) else
+         {"status": "N/A", "detail": "Static snapshot or one-off command: data is as of the build"}),
         ("Persistence", {"status": "OK" if p.persist_state == "done" else ("PENDING" if p.persist_state in ("running", "idle")
                                                                            else "ERROR"),
                          "detail": p.persist_state if p.repo else "database not initialised"}),

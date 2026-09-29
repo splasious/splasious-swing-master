@@ -1,0 +1,15 @@
+# docker compose up -d --build     (copy .env.example to .env first)
+services:
+  swing-master:
+    build: .
+    image: swing-master:latest
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      # loopback only: put a TLS reverse proxy (Caddy, nginx) in front for remote access
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - swing-master-state:/data
+
+volumes:
+  swing-master-state:

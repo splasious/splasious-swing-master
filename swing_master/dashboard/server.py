@@ -1,7 +1,9 @@
 """Dependency-free HTTP server for the dashboard (standard library only).
 
 Binds to 127.0.0.1 by default.  Serves the single-page UI from
-``application_ui/`` and JSON endpoints under ``/api``.
+``application_ui/`` and JSON endpoints under ``/api``.  With
+``SM_ACCESS_PASSWORD`` set, everything sits behind a sign-in page
+(``access.py``); without it the server only listens on loopback.
 """
 from __future__ import annotations
 
@@ -12,6 +14,8 @@ import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
+
+from .access import LOOPBACK, Access, login_page
 
 from ..logging_utils import log
 from ..schemas import to_jsonable
@@ -98,7 +102,9 @@ def route_post(p, path: str, body: dict) -> object:
     raise KeyError(path)
 
 
-def make_handler(platform):
+def make_handler(platform, access: Access = None):
+    access = access or Access()
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "SwingMaster/0.1"
 
@@ -115,6 +121,38 @@ def make_handler(platform):
             self.end_headers()
             self.wfile.write(data)
 
+        def _redirect(self, location: str, cookie: str = ""):
+            self.send_response(303)
+            self.send_header("Location", location)
+            if cookie:
+                self.send_header("Set-Cookie", cookie)
+            self.send_header("Content-Length", "0")
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+
+        def _secure(self) -> bool:
+            return self.headers.get("X-Forwarded-Proto", "").lower() == "https"
+
+        def _authorised(self, path: str) -> bool:
+            """True when the request may proceed; otherwise the response has been sent."""
+            if access.valid(self.headers.get("Cookie")):
+                return True
+            if path.startswith("/api/"):
+                self._send(401, {"error": "Unauthorized", "detail": "Sign in at /login"})
+            else:
+                self._redirect("/login")
+            return False
+
+        def _login(self):
+            client = self.client_address[0]
+            if access.locked_out(client):
+                return self._send(429, login_page("Too many attempts. Try again in a few minutes."), "text/html; charset=utf-8")
+            length = min(int(self.headers.get("Content-Length") or 0), 4096)
+            form = parse_qs(self.rfile.read(length).decode("utf-8", "replace")) if length else {}
+            if access.check(client, _q(form, "password", "")):
+                return self._redirect("/", access.cookie(self._secure()))
+            return self._send(401, login_page("Wrong password."), "text/html; charset=utf-8")
+
         def _error(self, code: int, exc: Exception):
             if code >= 500:
                 log("error", f"{self.path}: {exc}", trace=traceback.format_exc(limit=4))
@@ -122,6 +160,13 @@ def make_handler(platform):
 
         def do_GET(self):
             url = urlparse(self.path)
+            if access.enabled:
+                if url.path == "/login":
+                    return self._send(200, login_page(), "text/html; charset=utf-8")
+                if url.path == "/logout":
+                    return self._redirect("/login", access.cookie(self._secure(), clear=True))
+                if not self._authorised(url.path):
+                    return None
             if url.path.startswith("/api/"):
                 if url.path == "/api/journal.csv":
                     from ..journal import export_csv
@@ -144,6 +189,11 @@ def make_handler(platform):
 
         def do_POST(self):
             url = urlparse(self.path)
+            if access.enabled:
+                if url.path == "/login":
+                    return self._login()
+                if not self._authorised(url.path):
+                    return None
             try:
                 length = int(self.headers.get("Content-Length") or 0)
                 body = json.loads(self.rfile.read(length) or b"{}") if length else {}
@@ -159,10 +209,21 @@ def make_handler(platform):
     return Handler
 
 
+def check_bind(host: str) -> Access:
+    """The access settings for `host`; exits when a public address has no password."""
+    import os
+    access = Access.from_env()
+    if host not in LOOPBACK and not access.enabled and os.environ.get("SM_ALLOW_OPEN") != "1":
+        raise SystemExit(f"Refusing to listen on {host} without a password: set SM_ACCESS_PASSWORD "
+                         "(or SM_ALLOW_OPEN=1 if something in front of this server already restricts access).")
+    return access
+
+
 def serve(platform, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = False) -> None:
-    httpd = ThreadingHTTPServer((host, port), make_handler(platform))
+    access = check_bind(host)
+    httpd = ThreadingHTTPServer((host, port), make_handler(platform, access))
     url = f"http://{host}:{port}/"
-    print(f"Swing Master running at {url}  (Ctrl+C to stop)")
+    print(f"Swing Master running at {url}  (Ctrl+C to stop)" + ("  -- sign-in required" if access.enabled else ""))
     if open_browser:
         import webbrowser
         threading.Timer(0.5, lambda: webbrowser.open(url)).start()

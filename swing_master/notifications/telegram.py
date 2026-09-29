@@ -25,6 +25,7 @@ EVENT_TYPES = {
     "RISK_LIMIT_REACHED": "Risk limit reached",
     "DATA_DISCONNECTED": "Data feed disconnected",
     "BROKER_DISCONNECTED": "Broker disconnected",
+    "DAILY_SCAN": "Daily scan ready",
 }
 
 

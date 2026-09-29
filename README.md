@@ -133,11 +133,34 @@ Two ways, both producing the same static site:
 * **Project linked to GitHub** (needs a GitHub login connection on the Vercel account): set the project's **Root Directory** to this folder (`projects/swing-master` in the monorepo, or the repository root in a standalone checkout). `vercel.json` then runs `python3 -m swing_master.main export-static public/index.html` on every push.
 * **No GitHub link:** deploy the two files in [`deploy/vercel/`](deploy/vercel). Their build script clones the public branch, then runs the same export. `SM_GIT_REPO`, `SM_GIT_REF` and `SM_GIT_SUBDIR` choose the source. Redeploy to pick up new commits.
 
-The Vercel build uses `export-static public --split`. It writes a small `index.html` plus one JSON file per screen under `public/d/`, fetched when that screen opens. A 200-stock F&O universe therefore doesn't turn into a single page of tens of megabytes. To build from real data, add `SM_DATA_SOURCE=TRADINGMASTER`, `SM_TM_EMAIL` and `SM_TM_PASSWORD` to the Vercel project's environment variables (mark the credentials **Sensitive**) and redeploy. The data is as of the build, so redeploy after each session to refresh it.
+The Vercel build uses `export-static public --split`. It writes a small `index.html` plus one JSON file per screen under `public/d/`, fetched when that screen opens. A 200-stock F&O universe therefore doesn't turn into a single page of tens of megabytes. To build from real data, add `SM_TM_EMAIL` and `SM_TM_PASSWORD` to the Vercel project's environment variables (mark them **Sensitive**) and redeploy. The data is as of the build.
+
+**Daily refresh.** [`.github/workflows/vercel-refresh.yml`](.github/workflows/vercel-refresh.yml) redeploys the site at 18:40 IST every weekday, so each evening's build reads the day's data from TradingMaster. It needs one repository secret, `VERCEL_TOKEN` (vercel.com → Account Settings → Tokens; then GitHub → Settings → Secrets and variables → Actions → New repository secret). Without the secret the job only prints a notice. You can also start it by hand from the Actions tab (**Run workflow**).
 
 A demo build takes about 30 s and needs only the Python 3 and git that ship in Vercel's build image.
 
-Vercel runs short-lived functions without a persistent disk, so the live engine does not run there. Paper trading, settings changes, background scans and Telegram alerts belong on an always-on host next to the market data (for example a VPS running `python3 -m swing_master.main serve --host 0.0.0.0`). The Vercel site shows a snapshot taken at build time.
+Vercel runs short-lived functions without a persistent disk, so the live engine does not run there. The Vercel site shows a snapshot taken at build time. For paper trading, settings changes and Telegram alerts, run the server yourself (next section).
+
+## Running the live server yourself
+
+Swing Master only **reads** TradingMaster's API. Run it on your own PC or on a separate server, never on the TradingMaster server itself.
+
+```bash
+cp .env.example .env        # fill in SM_TM_EMAIL, SM_TM_PASSWORD, SM_ACCESS_PASSWORD
+docker compose up -d --build
+# -> http://127.0.0.1:8765  (first start reads the whole F&O history: a few minutes)
+```
+
+Without Docker: `python3 -m swing_master.main serve` (Python 3.10+, no packages to install).
+
+| Setting | Effect |
+|---|---|
+| `SM_ACCESS_PASSWORD` | Puts every page and `/api` call behind a sign-in page (signed, HttpOnly session cookie, 12 h). Required whenever the server listens on anything other than localhost: it refuses to start otherwise. Repeated wrong passwords lock that address out for 5 minutes |
+| `SM_SESSION_SECRET` | Keeps sessions valid across restarts (otherwise a restart signs everyone out) |
+| `SM_REFRESH_AT` | Weekday post-close refresh in IST, default `18:40`. The server re-reads the feed and rebuilds the scan, backtest and paper session while still serving the previous build. `off` disables it. Status in Data Health → Daily Refresh |
+| `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` | Telegram alerts: the daily scan summary, READY setups, entries, stop changes, targets and exits |
+
+The compose file publishes the port on `127.0.0.1` only. For access from a phone, put a TLS reverse proxy (Caddy or nginx) in front; the session cookie is marked `Secure` when the proxy sends `X-Forwarded-Proto: https`.
 
 ## Execution modes and safety
 

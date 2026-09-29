@@ -132,6 +132,14 @@ class PlatformTests(unittest.TestCase):
         self.assertNotIn("NIFTY", {s.get("symbol") for s in self.p.backtest.signals})
         self.assertIn(api.overview(self.p)["focus_symbol"], STOCKS)
 
+    def test_daily_refresh_rebuilds_and_notifies(self):
+        before = self.p.built_at
+        summary = self.p.refresh()
+        self.assertGreater(self.p.built_at, before)
+        self.assertEqual(set(summary), {"as_of", "seconds", "ready", "active", "top"})
+        self.assertEqual(self.p.bus.history[-1]["type"], "DAILY_SCAN")
+        self.assertEqual(self.p.status, "ready")
+
     def test_scanner_rows_carry_setup_type(self):
         from swing_master.scanner.swing_scanner import SETUP_TYPES
         rows = api.scanner(self.p)["rows"]

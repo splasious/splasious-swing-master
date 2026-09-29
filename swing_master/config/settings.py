@@ -64,6 +64,8 @@ class AppSettings:
     TELEGRAM_CHAT_ENV: str = "TELEGRAM_CHAT_ID"
 
     LOG_LEVEL: str = field(default_factory=lambda: _env("SM_LOG_LEVEL", "INFO"))
+    # daily post-close refresh of a running server (IST, weekdays); "off" disables
+    REFRESH_AT: str = field(default_factory=lambda: _env("SM_REFRESH_AT", "18:40"))
 
     @property
     def raw_db_path(self) -> Path:

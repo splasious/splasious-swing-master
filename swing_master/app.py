@@ -77,19 +77,8 @@ class Platform:
         self.settings = settings or AppSettings()
         self.cfg = cfg or StrategyConfig()
         self.cfg.validate()
-        if provider is None:
-            source = self.settings.DATA_SOURCE.upper()
-            if source == "DEMO":
-                provider = DemoMarketData(self.settings.DEMO_SEED, self.settings.DEMO_START, self.settings.DEMO_END)
-            elif source == "TRADINGMASTER":
-                from .data.tradingmaster import from_settings
-                provider = from_settings(self.settings)
-            elif source == "CSV":
-                from .data.historical import CSVMarketData
-                provider = CSVMarketData(self.settings.DATA_DIR)
-            else:
-                raise ValueError(f"SM_DATA_SOURCE must be DEMO, CSV or TRADINGMASTER, got {source!r}")
-        self.provider = provider
+        self._own_provider = provider is None
+        self.provider = provider if provider is not None else self._new_provider()
         self.symbols = symbols
         self.bus = NotificationBus()
         self.notify_events = set(EVENT_TYPES)
@@ -444,6 +433,38 @@ class Platform:
         self.paper_report = self.report(self.paper, with_attribution=False)
         self.scan = scan(self.datasets, self.cfg, self.paper.open_trades)
         self._scan_cache = {"1D": self.scan}
+
+    def _new_provider(self) -> MarketDataProvider:
+        source = self.settings.DATA_SOURCE.upper()
+        if source == "DEMO":
+            return DemoMarketData(self.settings.DEMO_SEED, self.settings.DEMO_START, self.settings.DEMO_END)
+        if source == "TRADINGMASTER":
+            from .data.tradingmaster import from_settings
+            return from_settings(self.settings)
+        if source == "CSV":
+            from .data.historical import CSVMarketData
+            return CSVMarketData(self.settings.DATA_DIR)
+        raise ValueError(f"SM_DATA_SOURCE must be DEMO, CSV or TRADINGMASTER, got {source!r}")
+
+    def refresh(self) -> Dict:
+        """Daily post-close refresh: read the feed again, then rebuild everything.
+
+        The new feed is loaded before the lock is taken, so the dashboard keeps
+        serving the previous build until the swap.  Manual stop / close actions
+        are replayed onto the new paper session by ``build``."""
+        t0 = time.time()
+        fresh = self._new_provider() if self._own_provider else self.provider
+        with self.lock:
+            self.provider = fresh
+            self.build()
+        rows = self.scan["rows"]
+        summary = {"as_of": self.as_of.isoformat(timespec="minutes"), "seconds": round(time.time() - t0, 1),
+                   "ready": sum(1 for r in rows if r["status"] == "READY"),
+                   "active": len(self.paper.open_trades),
+                   "top": ", ".join(f"{r['symbol']} {r['direction']}" for r in rows if r["status"] == "READY")[:300] or None}
+        log("system", "daily refresh complete", **summary)
+        self.bus.publish("DAILY_SCAN", summary)
+        return summary
 
     def _anchor_symbol(self) -> str:
         """The market-context series (NIFTY): regime, and the calendar the paper session replays."""

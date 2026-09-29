@@ -35,9 +35,14 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     settings = AppSettings()
+    if args.cmd == "serve":  # fail fast, before the data load, on an unprotected public address
+        from .dashboard.server import check_bind
+        check_bind(args.host or settings.HOST)
     platform = Platform(settings, persist=args.cmd == "serve")
     if args.cmd == "serve":
         from .dashboard.server import serve
+        from .scheduler import DailyRefresh, parse_at
+        platform.refresher = DailyRefresh(platform, parse_at(settings.REFRESH_AT)).start()
         serve(platform, args.host or settings.HOST, args.port or settings.PORT, args.open)
     elif args.cmd == "scan":
         for r in platform.scan["rows"]:

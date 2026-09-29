@@ -170,6 +170,7 @@
       }
       if (!opts.fresh && cache.has(k)) return cache.get(k);
       const res = await fetch(k, { headers: { Accept: "application/json" } });
+      if (res.status === 401) { location.href = "/login"; throw new Error("Signed out"); }
       const body = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(body.detail || `${res.status} ${res.statusText}`);
       if (!opts.nocache) cache.set(k, body);
@@ -178,6 +179,7 @@
     async post(path, body) {
       if (window.__SM_SNAPSHOT__) throw new Unavailable("Static preview is read-only. Start the local server to recompute.");
       const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+      if (res.status === 401) { location.href = "/login"; throw new Error("Signed out"); }
       const out = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(out.detail || `${res.status} ${res.statusText}`);
       cache.clear();

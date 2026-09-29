@@ -1,0 +1,42 @@
+name: Refresh Vercel site
+
+# Rebuilds the Vercel site every weekday evening, after the NSE close, so the
+# dashboard shows the latest TradingMaster data.  Vercel runs deploy/vercel/build.sh,
+# which clones this repository and reads TradingMaster with the SM_TM_EMAIL /
+# SM_TM_PASSWORD variables stored in the Vercel project.  Nothing here touches the
+# TradingMaster server: the build only reads its API.
+#
+# Needs one repository secret: VERCEL_TOKEN (vercel.com -> Account Settings -> Tokens).
+# Without it the job only prints a notice.
+
+on:
+  schedule:
+    - cron: "10 13 * * 1-5"   # 18:40 IST, Monday to Friday
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vercel-refresh
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: team_wscN2iF93H2I9U7D9DElqzhc
+      VERCEL_PROJECT_ID: prj_uZ6Joz5E193wwBMJVwXaR2QUWcLE
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: No token configured
+        if: env.VERCEL_TOKEN == ''
+        run: echo "::notice::Add a VERCEL_TOKEN repository secret to turn on the daily Vercel refresh."
+
+      - name: Deploy to production
+        if: env.VERCEL_TOKEN != ''
+        working-directory: deploy/vercel
+        run: npx --yes vercel@latest deploy --prod --yes --token "$VERCEL_TOKEN"
