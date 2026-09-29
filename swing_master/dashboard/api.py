@@ -45,8 +45,10 @@ def meta(p) -> Dict:
         "as_of": p.as_of.isoformat(), "built_at": p.built_at.isoformat() if getattr(p, "built_at", None) else None,
         "timings": p.timings, "timeframes": TIMEFRAMES, "modes": list(MODES), "execution_mode": p.execution_mode,
         "live_enabled": p.settings.LIVE_TRADING_ENABLED,
+        # only what can be traded is offered as a symbol; indices stay behind the market context
         "universe": [{"symbol": i.symbol, "name": i.name, "sector": i.sector, "is_index": i.is_index,
-                      "lot_size": i.lot_size, "has_options": i.has_options} for i in p.universe],
+                      "lot_size": i.lot_size, "has_options": i.has_options} for i in p.universe if i.tradable],
+        "context_symbols": [i.symbol for i in p.universe if not i.tradable],
         "market": "NSE", "universe_name": p.universe_info["label"] + (" (demo subset)" if p.provider.is_demo else ""),
         "universe_info": {k: v for k, v in p.universe_info.items() if k != "missing_data"}
         | {"missing_data": len(p.universe_info["missing_data"])},
@@ -136,7 +138,7 @@ def overview(p) -> Dict:
     nifty = p.datasets[p._anchor_symbol()]
     oi = nifty.derivs.oi_state(p.as_of + timedelta(hours=6)) if nifty.derivs else None
     recent = sorted(p.paper.signals, key=lambda s: s["time"], reverse=True)[:14]
-    focus = next((r["symbol"] for r in rows if r["status"] in ("READY", "ACTIVE", "WAIT")), p._anchor_symbol())
+    focus = next((r["symbol"] for r in rows if r["status"] in ("READY", "ACTIVE", "WAIT")), p.first_tradable())
     return {
         "focus_symbol": focus,
         "market": market_context(p),

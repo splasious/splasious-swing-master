@@ -102,9 +102,10 @@ python3 -m swing_master.main serve
 | Daily and intraday OHLCV, futures open interest | `GET /market-data/candles` |
 | Current option chain | `GET /options/{id}/expiries`, `GET /options/{id}/chain` |
 
-The connector only logs in and reads; it never writes to TradingMaster. It logs in again automatically when TradingMaster's 15-minute token expires.
+TradingMaster is used purely as a **read-only data feed**: the connector only logs in and reads its existing API. It never writes to TradingMaster, needs no change to TradingMaster's code, and installs nothing on its server. It logs in again automatically when TradingMaster's 15-minute token expires.
 
-* **Universe:** F&O by construction. A stock appears only when TradingMaster holds NFO contracts for it, and it needs at least 120 completed daily bars. Skipped symbols are listed in Data Health.
+* **Universe:** F&O stocks by construction. A stock appears only when TradingMaster holds NFO contracts for it, and it needs at least 120 completed daily bars. Skipped symbols are listed in Data Health.
+* **Not in the feed:** participant-wise OI (positioning), option OI history and a stock sector list. Data Health marks them unavailable, and the confluence score re-weights the remaining factors (unavailable-factor policy in Settings). Nothing is fetched from anywhere else.
 * **Timestamps:** converted from UTC to IST. Daily bars are keyed by IST date. Today's daily bar before 15:30 and unfinished intraday bars are ignored.
 * **Futures OI:** the nearest unexpired contract on each date. ΔOI compares the same contract day over day.
 * **Options:** TradingMaster keeps only the current chain, so PCR exists for the latest session. Its per-strike change is measured from the day's open, so ΔOI PCR reports itself unavailable instead of mixing the two definitions.
@@ -115,11 +116,11 @@ Other settings: `SM_TM_API_URL` (default `https://api.tradingmaster.online/api/v
 
 ## F&O-only universe
 
-By default Swing Master scans and trades **NSE F&O underlyings only** (`SM_UNIVERSE=FNO`). A stock qualifies when it has exchange-traded stock futures. Index underlyings with futures (NIFTY, BANKNIFTY, FINNIFTY, ...) stay in as market-context anchors. The scanner, backtest, walk-forward, proposals and paper trading all use the same filtered list.
+By default Swing Master scans and trades **NSE F&O stocks only** (`SM_UNIVERSE=FNO`). A stock qualifies when it has exchange-traded stock futures. Index underlyings (NIFTY, BANKNIFTY, FINNIFTY, ...) are loaded only as market context (market regime, breadth and the session calendar). They are never scanned, backtested or traded, and they are not offered in the symbol pickers. The scanner, backtest, walk-forward, proposals and paper trading all use the same list of F&O stocks.
 
 | Variable | Effect |
 |---|---|
-| `SM_UNIVERSE=FNO` (default) | Keep stocks with futures (`has_futures=1` in `universe.csv`) plus index anchors |
+| `SM_UNIVERSE=FNO` (default) | Trade stocks with futures (`has_futures=1` in `universe.csv`); indices with futures are kept as non-tradable market context |
 | `SM_FNO_LIST=/path/fo_mktlots.csv` | Use the exchange's current F&O list instead. NSE's `fo_mktlots.csv` works unchanged, and its lot sizes replace the ones in `universe.csv`. A CSV with a `SYMBOL` column or a text file with one symbol per line also works |
 | `SM_UNIVERSE=ALL` | No filter |
 

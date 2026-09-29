@@ -40,10 +40,10 @@ INTRADAY_SESSIONS = {"4H": 200, "1H": 90, "15m": 25, "5m": 8}
 _WORKER: Dict = {}
 
 
-def _analyze_worker(symbol: str) -> SymbolDataset:
+def _analyze_worker(inst) -> SymbolDataset:
     """Runs in a forked worker; the provider reference is stripped before pickling back."""
     prov, cfg, pos = _WORKER["provider"], _WORKER["cfg"], _WORKER["positioning"]
-    ds = analyze_symbol(prov.instrument(symbol), prov.daily_bars(symbol), cfg, pos, prov)
+    ds = analyze_symbol(inst, prov.daily_bars(inst.symbol), cfg, pos, prov)
     if ds.derivs is not None:
         ds.derivs.provider = None
     return ds
@@ -54,13 +54,14 @@ def analyze_universe(provider, instruments, cfg, positioning, workers: Optional[
     import multiprocessing
     import os
     workers = workers if workers is not None else int(os.environ.get("SM_WORKERS", "0") or 0) or (os.cpu_count() or 1)
-    symbols = [i.symbol for i in instruments]
-    if workers > 1 and len(symbols) > 4 and "fork" in multiprocessing.get_all_start_methods():
+    # the universe's own instrument objects are used (not the provider's), so flags set by the
+    # universe selection -- indices as non-tradable market context -- reach the analysis
+    if workers > 1 and len(instruments) > 4 and "fork" in multiprocessing.get_all_start_methods():
         from concurrent.futures import ProcessPoolExecutor
         _WORKER.update(provider=provider, cfg=cfg, positioning=positioning)
         try:
             with ProcessPoolExecutor(max_workers=workers, mp_context=multiprocessing.get_context("fork")) as ex:
-                results = list(ex.map(_analyze_worker, symbols, chunksize=2))
+                results = list(ex.map(_analyze_worker, instruments, chunksize=2))
         finally:
             _WORKER.clear()
         for ds in results:
@@ -445,7 +446,11 @@ class Platform:
         self._scan_cache = {"1D": self.scan}
 
     def _anchor_symbol(self) -> str:
+        """The market-context series (NIFTY): regime, and the calendar the paper session replays."""
         return "NIFTY" if "NIFTY" in self.datasets else next(iter(self.datasets))
+
+    def first_tradable(self) -> str:
+        return next((i.symbol for i in self.universe if i.tradable), self._anchor_symbol())
 
     def report(self, result: BacktestResult, with_attribution: bool = True) -> Dict:
         m = compute_metrics(result.trades, result.equity_curve, result.initial_capital, result.open_trades)
@@ -517,7 +522,7 @@ class Platform:
         key = (symbol, timeframe)
         with self.lock:
             if key not in self._chart_cache:
-                inst = self.provider.instrument(symbol)
+                inst = self.datasets[symbol].instrument
                 if timeframe in ("1W", "1M"):
                     from .data.resampler import resample
                     # only COMPLETED periods: a forming week/month is never analysed as if it had closed

@@ -392,8 +392,10 @@ class TradingMasterData(MarketDataProvider):
             "futures_oi": {"status": "OK" if with_oi else "UNAVAILABLE",
                            "detail": f"{with_oi}/{n} underlyings have futures OI (nearest unexpired contract)"},
             "options_feed": {"status": "OK" if self._chains else "UNAVAILABLE",
-                             "detail": f"{len(self._chains)} current chain snapshots; history not stored by the source"},
-            "positioning_feed": {"status": "UNAVAILABLE", "detail": "Load NSE participant-wise OI via SM_POSITIONING_CSV"},
+                             "detail": f"{len(self._chains)} current chain snapshots; option OI history is not in the TradingMaster feed"},
+            "positioning_feed": {"status": "UNAVAILABLE",
+                                 "detail": "Participant-wise OI is not in the TradingMaster feed; scores re-weight the "
+                                           "remaining factors (unavailable-factor policy in Settings)"},
             "last_candle": {"status": "OK" if last else "UNAVAILABLE", "detail": last.isoformat() if last else "none"},
             "latency": {"status": "N/A", "detail": "Snapshot at load time"},
             "data_gaps": {"status": "WARN" if dropped else "OK", "detail": f"{dropped} invalid rows dropped"},

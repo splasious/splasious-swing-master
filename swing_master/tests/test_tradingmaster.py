@@ -257,7 +257,7 @@ class TradingMasterTests(unittest.TestCase):
             self.assertTrue(meta["source"].startswith("TradingMaster (127.0.0.1"))
             self.assertEqual(meta["universe_info"]["stocks"], 2)
             self.assertEqual(p.as_of, datetime(2026, 9, 25, 15, 30))
-            self.assertEqual(api.scanner(p)["funnel"]["universe"], 3)
+            self.assertEqual(api.scanner(p)["funnel"]["universe"], 2)  # the 2 stocks; NIFTY is context only
             health = json.dumps(api.health_payload(p))
             self.assertIn("3 F&O underlyings", health)
 

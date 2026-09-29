@@ -11,6 +11,7 @@ from swing_master.data.demo import DemoMarketData
 from swing_master.dashboard import api
 
 SYMBOLS = ["NIFTY", "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN", "LT"]
+STOCKS = SYMBOLS[1:]  # NIFTY is market context only
 
 
 class PlatformTests(unittest.TestCase):
@@ -50,7 +51,7 @@ class PlatformTests(unittest.TestCase):
     def test_scanner_other_timeframe(self):
         out = api.scanner(self.p, tf="1W")
         self.assertEqual(out["timeframe"], "1W")
-        self.assertEqual(out["funnel"]["universe"], len(SYMBOLS))
+        self.assertEqual(out["funnel"]["universe"], len(STOCKS))
 
     def test_mtf_context(self):
         m = api.mtf_payload(self.p, "RELIANCE")
@@ -111,11 +112,25 @@ class PlatformTests(unittest.TestCase):
             self.assertEqual(chart["symbol"], "RELIANCE")
             self.assertEqual(len(list((Path(tmp) / "d").iterdir())), n)
             self.assertIn('localStorage.getItem("sm.skin"', html)
-            # the Weekly / Daily / 1H layout: weekly for every symbol, 1H for the focus symbol
-            for sym in SYMBOLS:
+            # the Weekly / Daily / 1H layout: weekly for every F&O stock, 1H for the focus symbol
+            for sym in STOCKS:
                 self.assertIn(f"/api/chart?profile=FIXED&symbol={sym}&tf=1W", snap["files"])
+            self.assertFalse([k for k in snap["files"] if "symbol=NIFTY&" in k], "indices are not exported as symbols")
             focus = api.overview(self.p)["focus_symbol"]
             self.assertIn(f"/api/chart?profile=FIXED&symbol={focus}&tf=1H", snap["files"])
+
+    def test_indices_are_market_context_only(self):
+        nifty = next(i for i in self.p.universe if i.symbol == "NIFTY")
+        self.assertFalse(nifty.tradable)
+        meta = api.meta(self.p)
+        self.assertEqual({u["symbol"] for u in meta["universe"]}, set(STOCKS))
+        self.assertEqual(meta["context_symbols"], ["NIFTY"])
+        for tf in ("1D", "1W"):
+            self.assertNotIn("NIFTY", {r["symbol"] for r in api.scanner(self.p, tf=tf)["rows"]})
+        traded = {t.symbol for t in list(self.p.backtest.trades) + list(self.p.paper.trades) + list(self.p.paper.open_trades)}
+        self.assertNotIn("NIFTY", traded)
+        self.assertNotIn("NIFTY", {s.get("symbol") for s in self.p.backtest.signals})
+        self.assertIn(api.overview(self.p)["focus_symbol"], STOCKS)
 
     def test_scanner_rows_carry_setup_type(self):
         from swing_master.scanner.swing_scanner import SETUP_TYPES

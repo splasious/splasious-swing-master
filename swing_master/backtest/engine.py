@@ -82,6 +82,8 @@ class PortfolioBacktester:
                            and (self.end is None or b.timestamp <= self.end)})
         evals_by_ts: Dict[datetime, List[SetupEvaluation]] = {}
         for ds in self.datasets.values():
+            if not ds.instrument.tradable:
+                continue  # market-context instruments (indices in the F&O universe) are never traded
             for ev in ds.evaluations:
                 evals_by_ts.setdefault(ev.timestamp, []).append(ev)
 

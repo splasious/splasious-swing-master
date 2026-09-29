@@ -67,13 +67,13 @@ def collect(p) -> Dict[str, Any]:
     for src in ("backtest", "paper"):
         put("/api/journal", {"source": src}, lambda s=src: api.journal_payload(p, s))
 
-    focus = {ov["focus_symbol"], p._anchor_symbol()}
+    focus = {ov["focus_symbol"], p.first_tradable()}
     mtf_syms = focus | {r["symbol"] for r in p.scan["rows"] if r["status"] != "REJECTED"}
     for s in sorted(mtf_syms):
         put("/api/mtf", {"symbol": s}, lambda s=s: api.mtf_payload(p, s))
         # the multi-timeframe layout's 1H entry chart; its bars were already loaded for /api/mtf
         put("/api/chart", {"symbol": s, "tf": "1H", "profile": "FIXED"}, lambda s=s: api.chart(p, s, "1H", "FIXED", 260))
-    for inst in p.universe:
+    for inst in [i for i in p.universe if i.tradable]:  # F&O stocks; indices are market context only
         s = inst.symbol
         put("/api/chart", {"symbol": s, "tf": "1D", "profile": "FIXED"}, lambda s=s: api.chart(p, s, "1D", "FIXED", 260))
         put("/api/chart", {"symbol": s, "tf": "1W", "profile": "FIXED"}, lambda s=s: api.chart(p, s, "1W", "FIXED", 260))

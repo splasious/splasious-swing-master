@@ -1,9 +1,11 @@
 """Trading-universe selection.
 
-Swing Master trades NSE F&O underlyings only (``SM_UNIVERSE=FNO``, the
+Swing Master trades NSE F&O stocks only (``SM_UNIVERSE=FNO``, the
 default).  A stock is eligible when it has exchange-traded stock futures,
 which on NSE always come with stock options.  Index underlyings with futures
-(NIFTY, BANKNIFTY, ...) stay in as market-context anchors.
+(NIFTY, BANKNIFTY, ...) are kept as market context only -- market regime,
+breadth and the session calendar -- and marked non-tradable, so they are
+never scanned, backtested or traded and never offered as a symbol.
 
 Membership comes from, in order of precedence:
 
@@ -68,7 +70,7 @@ def select_universe(instruments: List[Instrument], mode: str = "FNO",
             kept.append(inst)
         elif inst.is_index:
             if inst.has_futures:
-                kept.append(inst)
+                kept.append(dataclasses.replace(inst, tradable=False))  # market context only
             else:
                 excluded.append(inst.symbol)
         elif fno_list is not None:
@@ -86,7 +88,7 @@ def select_universe(instruments: List[Instrument], mode: str = "FNO",
     if mode == "ALL":
         label, source = f"All instruments: {stocks} stocks + {indices} indices", "no filter"
     else:
-        label = f"NSE F&O: {stocks} stocks + {indices} indices"
+        label = f"NSE F&O stocks: {stocks}" + (f" (+{indices} indices as market context)" if indices else "")
         source = "F&O list file" if fno_list is not None else "instrument master (stocks with futures)"
     missing = sorted(set(fno_list or {}) - {i.symbol.upper() for i in instruments}) if mode == "FNO" else []
     return kept, {"mode": mode, "label": label, "source": source, "stocks": stocks, "indices": indices,

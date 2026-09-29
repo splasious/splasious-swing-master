@@ -29,6 +29,9 @@ class UniverseTests(unittest.TestCase):
         self.assertEqual([i.symbol for i in kept], ["NIFTY", "RELIANCE", "TCS"])
         self.assertEqual(sorted(info["excluded"]), ["INDIAVIX", "SMALLCO"])
         self.assertEqual((info["stocks"], info["indices"]), (2, 1))
+        # indices stay only as market context: never scanned, backtested or traded
+        self.assertEqual({i.symbol: i.tradable for i in kept}, {"NIFTY": False, "RELIANCE": True, "TCS": True})
+        self.assertIn("NSE F&O stocks: 2", info["label"])
 
     def test_all_keeps_everything(self):
         kept, info = select_universe(UNIVERSE, "all")
